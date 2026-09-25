@@ -1,9 +1,10 @@
 import { applyPlanInstruction, newAgent, newPage } from "./plan";
 import { APP_THEMES, THEME_IDS } from "./themes";
+import type { IssueTrigger } from "./issues";
 import type { AppTheme, FieldType, Plan } from "./types";
 
 export type EditResult =
-  | { ok: true; plan: Plan; title: string; changes: string[]; focusPage?: string }
+  | { ok: true; plan: Plan; title: string; changes: string[]; focusPage?: string; trigger?: IssueTrigger }
   | { ok: false; reply: string; examples: string[] };
 
 const COLOR_THEMES: [RegExp, AppTheme][] = [
@@ -62,11 +63,14 @@ const EXAMPLES = [
  * Build-mode edits. Recognises the changes this simulation can make for real (theme, pages, agents,
  * fields, search, banner, name) and applies them to the plan; files are regenerated from the plan.
  */
-export function applyEdit(plan: Plan, text: string): EditResult {
+export function applyEdit(plan: Plan, text: string, opts?: { pageId?: string }): EditResult {
   const next = structuredClone(plan);
   const changes: string[] = [];
   let focusPage: string | undefined;
+  let trigger: IssueTrigger | undefined;
   const t = text.trim();
+  // An @file mention in Pro points the change at one page.
+  const mentioned = next.pages.find((p) => p.id === opts?.pageId);
 
   // Theme
   const named = THEME_IDS.find((id) => new RegExp(`\\b${id}\\b`, "i").test(t));
@@ -112,14 +116,17 @@ export function applyEdit(plan: Plan, text: string): EditResult {
   if (field) {
     const label = titleCase(field[1].trim());
     const target =
-      next.data.find((c) => field[2] && (c.name.toLowerCase() === field[2].trim().toLowerCase() || c.id === field[2].trim().toLowerCase())) ?? next.data[0];
+      next.data.find((c) => field[2] && (c.name.toLowerCase() === field[2].trim().toLowerCase() || c.id === field[2].trim().toLowerCase())) ??
+      next.data.find((c) => c.id === mentioned?.collection) ??
+      next.data[0];
     if (target && !target.fields.some((f) => f.label.toLowerCase() === label.toLowerCase())) {
       const key = label.toLowerCase().replace(/[^a-z0-9]+/g, "_");
       const type = guessFieldType(label);
       target.fields.push({ key, label, type });
       target.rows = target.rows.map((r, i) => ({ ...r, [key]: sampleValue(type, i) }));
       changes.push(`Added a ${label} field to ${target.name.toLowerCase()}`);
-      focusPage = next.pages.find((p) => p.collection === target.id && p.kind === "list")?.id;
+      focusPage = mentioned?.collection === target.id ? mentioned.id : next.pages.find((p) => p.collection === target.id && p.kind === "list")?.id;
+      trigger = { kind: "field", pageId: focusPage };
     }
   }
 
@@ -131,7 +138,10 @@ export function applyEdit(plan: Plan, text: string): EditResult {
       Object.assign(next, res.plan);
       changes.push(...real);
       const added = res.plan.pages.find((p) => !plan.pages.some((q) => q.id === p.id));
-      if (added) focusPage = added.id;
+      if (added) {
+        focusPage = added.id;
+        trigger = { kind: "page", pageId: added.id };
+      }
     }
   }
 
@@ -156,6 +166,7 @@ export function applyEdit(plan: Plan, text: string): EditResult {
         if (!next.pages.some((p) => p.id === page.id)) next.pages.splice(next.pages.length - 1, 0, page);
         changes.push(`Added a ${page.name} page`);
         focusPage = page.id;
+        trigger = { kind: "page", pageId: page.id };
       } else {
         const agent = newAgent(object);
         agent.role = suggestion + ".";
@@ -179,5 +190,5 @@ export function applyEdit(plan: Plan, text: string): EditResult {
   }
 
   const title = changes.length === 1 ? changes[0] : `${changes[0]} and ${changes.length - 1} more`;
-  return { ok: true, plan: next, title, changes, focusPage };
+  return { ok: true, plan: next, title, changes, focusPage: focusPage ?? mentioned?.id, trigger };
 }

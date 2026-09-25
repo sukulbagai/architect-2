@@ -65,6 +65,29 @@ export type PlanQuestion = {
   options: QuestionOption[];
 };
 
+/**
+ * A bug in the generated app. It's real in the generated code (codegen writes the unguarded line),
+ * the preview renders the page's crash state, and fixing it produces a genuine diff.
+ */
+export type Issue = {
+  id: string;
+  pageId: string;
+  severity: "error" | "warning";
+  /** Simple: "The Reports page can't load its data yet." */
+  plain: string;
+  /** Pro: "TypeError: Cannot read properties of undefined (reading 'map')" */
+  title: string;
+  file: string;
+  line: number;
+  stack: string[];
+  /** "Guarded the empty list and added a loading state" */
+  fix: string;
+};
+
+export type EditTone = "accent" | "muted";
+export type EditSize = "s" | "m" | "l";
+export type EditStyle = { tone?: EditTone; size?: EditSize };
+
 export type Plan = {
   blueprintId: string;
   appName: string;
@@ -81,9 +104,19 @@ export type Plan = {
     banner?: string;
     search: boolean;
     compact?: boolean;
+    /** Visual edits to text that has no plan field of its own, keyed by the element's edit id. */
+    labels?: Record<string, string>;
+    /** Visual edits to emphasis and size, keyed by the element's edit id. */
+    styles?: Record<string, EditStyle>;
   };
-  /** Hand edits made in the Code tab; they survive regeneration. */
-  fileOverrides?: Record<string, string>;
+  /** The model Architect builds with. Sonnet costs less, so it changes the estimate. */
+  model?: string;
+  /** Open bugs in the generated app. Versions snapshot them, so undo brings a bug back. */
+  issues?: Issue[];
+  /** Pages whose live-data loading has been guarded by a fix. */
+  guards?: string[];
+  /** Hand edits made in the Code tab; they survive regeneration. `null` keeps a file out. */
+  fileOverrides?: Record<string, string | null>;
   /** Next steps suggested after a build. */
   suggestions: string[];
   /** A scripted issue the testing step finds and fixes. */
@@ -119,10 +152,34 @@ export type BuildSummary = {
   suggestions: string[];
 };
 
+export type FileChange = { path: string; added: number; removed: number; status: "added" | "modified" | "deleted" };
+
 export type EditSummary = {
   version: number;
   previousVersion: number;
   title: string;
   changes: string[];
-  files: { path: string; added: number; removed: number; status: "added" | "modified" | "deleted" }[];
+  files: FileChange[];
 };
+
+/** A change waiting for review in Pro: nothing is saved until it's accepted. */
+export type ProposalFile = FileChange & { before: string | null; after: string | null };
+
+export type ProposalData = {
+  status: "pending" | "accepted" | "partial" | "discarded";
+  baseVersionId: string;
+  title: string;
+  changes: string[];
+  plan: Plan;
+  commit: string;
+  files: ProposalFile[];
+  focusPage?: string;
+  /** Set when a newer proposal replaced this one before it was reviewed. */
+  superseded?: boolean;
+  /** How many files were accepted, and the version that made, once it's closed. */
+  accepted?: number;
+  version?: number;
+};
+
+/** What the testing agent did during a change, shown on the edit card. */
+export type TestReport = { checks: number; caught?: { plain: string; fix: string } };

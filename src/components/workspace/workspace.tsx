@@ -1,36 +1,50 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AppWindow,
   Bot,
   Code2,
   Database,
   ExternalLink,
+  FileCode2,
   FileText,
+  FlaskConical,
+  GitCompare,
+  Hammer,
   History,
+  Lightbulb,
   Monitor,
   MoreHorizontal,
+  MousePointerClick,
+  PanelBottom,
   PanelLeftClose,
   PanelLeftOpen,
+  Plus,
   RotateCw,
   Rocket,
   Settings2,
   Share2,
   Smartphone,
   Tablet,
+  Undo2,
+  Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { timeAgo } from "@/lib/format";
 import { renameProject } from "@/lib/actions/projects";
 import type { ClientMessage, ClientVersion } from "@/lib/actions/build";
 import type { Mode } from "@/db/schema";
+import type { EditTarget } from "@/lib/sim/visual";
 import type { Plan } from "@/lib/sim/types";
 import { LogoMark } from "@/components/brand/logo";
 import { StatusBadge } from "@/components/common/status-badge";
 import { useModeSwitch } from "@/components/shell/app-shell";
 import { GithubGlyph } from "@/components/auth/brand-icons";
+import { useCommandPalette, useRegisterCommands, type CommandItem } from "@/components/command/command-provider";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -48,10 +62,13 @@ import { ChatComposer } from "./chat-composer";
 import { PreviewPanel, type Device } from "./stage-preview";
 import { CodePanel } from "./stage-code";
 import { PlanPanel } from "./plan-panel";
+import { ReviewPanel } from "./review-panel";
 import { AgentsPanel, DataPanel, SettingsPanel, VersionsPanel } from "./stage-panels";
+import { BottomDrawer, DRAWER_MAX, DRAWER_MIN, type DrawerTab } from "./bottom-drawer";
 
 const TABS: { id: TabId; label: string; icon: typeof AppWindow; pro?: boolean }[] = [
   { id: "preview", label: "Preview", icon: AppWindow },
+  { id: "review", label: "Review", icon: GitCompare, pro: true },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "agents", label: "Agents", icon: Bot },
   { id: "data", label: "Data", icon: Database },
@@ -61,6 +78,11 @@ const TABS: { id: TabId; label: string; icon: typeof AppWindow; pro?: boolean }[
 ];
 
 const CHAT_KEY = "architect:chat-width";
+const DRAWER_KEY = "architect:drawer";
+
+function isTyping(el: Element | null) {
+  return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || !!el.closest(".cm-editor"));
+}
 
 export function Workspace(props: {
   project: WorkspaceProject;
@@ -71,30 +93,72 @@ export function Workspace(props: {
   freshMessageId: string | null;
   autoBuild: boolean;
   mode: Mode;
+  user: string;
 }) {
-  const ws = useWorkspace(props);
+  const router = useRouter();
   const { mode, change } = useModeSwitch(props.mode);
   const isPro = mode === "pro";
+  const [mobileView, setMobileView] = useState<"chat" | "app">("chat");
+  const ws = useWorkspace(props, mode, () => setMobileView("app"));
+  const palette = useCommandPalette();
   const [chatMode, setChatMode] = useState<"plan" | "build">("build");
   const [device, setDevice] = useState<Device>("desktop");
   const [nonce, setNonce] = useState(0);
   const [route, setRoute] = useState<string | null>(null);
   const [width, setWidth] = useState(400);
   const [chatHidden, setChatHidden] = useState(false);
-  const [mobileView, setMobileView] = useState<"chat" | "app">("chat");
   const [showCodeInSimple, setShowCodeInSimple] = useState(false);
+  const [drawer, setDrawer] = useState<{ open: boolean; height: number; tab: DrawerTab }>({ open: false, height: 240, tab: "terminal" });
+  const [drawerMounted, setDrawerMounted] = useState(false);
+  const [selectOn, setSelectOnState] = useState(false);
+  const [selectTarget, setSelectTarget] = useState<EditTarget | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
-  const visibleTabs = TABS.filter((t) => !t.pro || isPro || showCodeInSimple);
+  const hasReview = isPro && !!ws.pendingProposal;
+  const hasCode = isPro || showCodeInSimple;
+  const visibleTabs = TABS.filter((t) => (t.id === "review" ? hasReview : t.id === "code" ? hasCode : true));
   const tab = visibleTabs.some((t) => t.id === ws.tab) ? ws.tab : "preview";
+  const previewingOld = !!ws.previewVersionId && ws.previewVersionId !== ws.currentVersionId;
+  const canSelect = ws.project.stage === "ready" && !ws.build && !!ws.currentVersionId && !previewingOld;
+  const selecting = selectOn && canSelect && tab === "preview";
+
+  const setWsTab = ws.setTab;
+  const setSelectOn = useCallback(
+    (on: boolean) => {
+      setSelectOnState(on);
+      if (!on) setSelectTarget(null);
+      if (on) {
+        setWsTab("preview");
+        setMobileView("app");
+      }
+    },
+    [setWsTab],
+  );
 
   useEffect(() => {
     try {
       const w = Number(localStorage.getItem(CHAT_KEY));
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- restore a per-browser preference
+      const d = JSON.parse(localStorage.getItem(DRAWER_KEY) ?? "null");
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- restore per-browser preferences
       if (w >= 320 && w <= 560) setWidth(w);
+      if (d && typeof d.height === "number") {
+        setDrawer({ open: !!d.open, height: Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, d.height)), tab: ["terminal", "logs", "problems"].includes(d.tab) ? d.tab : "terminal" });
+        if (d.open) setDrawerMounted(true);
+      }
     } catch {}
   }, []);
+
+  const saveDrawer = useCallback((next: { open: boolean; height: number; tab: DrawerTab }) => {
+    setDrawer(next);
+    if (next.open) setDrawerMounted(true);
+    try {
+      localStorage.setItem(DRAWER_KEY, JSON.stringify(next));
+    } catch {}
+  }, []);
+  const toggleDrawer = useCallback(
+    (tabId?: DrawerTab) => saveDrawer({ ...drawer, open: tabId ? true : !drawer.open, tab: tabId ?? drawer.tab }),
+    [drawer, saveDrawer],
+  );
 
   // Keep the conversation pinned to the latest message.
   const building = !!ws.build;
@@ -106,14 +170,23 @@ export function Workspace(props: {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key === "\\") {
         e.preventDefault();
         setChatHidden((h) => !h);
+      } else if (meta && e.key.toLowerCase() === "j" && isPro) {
+        e.preventDefault();
+        toggleDrawer();
+      } else if (!meta && !e.altKey && e.key.toLowerCase() === "v" && tab === "preview" && canSelect && !isTyping(document.activeElement) && !document.querySelector("[role=dialog]:not([aria-label='Edit element'])")) {
+        e.preventDefault();
+        setSelectOn(!selectOn);
+      } else if (e.key === "Escape" && selectOn && !document.querySelector("[role=dialog]:not([aria-label='Edit element'])")) {
+        setSelectOn(false);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [isPro, tab, canSelect, selectOn, setSelectOn, toggleDrawer]);
 
   const onRoute = useCallback((page: string) => setRoute(page), []);
 
@@ -143,9 +216,92 @@ export function Workspace(props: {
     void ws.send(text, m);
   };
 
+  // ---------------------------------------------------------------------------------------------
+  // ⌘K: what this project adds to the command palette
+
+  const { issues, pendingProposal, project, plan, previousVersion, versions, currentVersionId, currentVersion, settings } = ws;
+  const { fixIssue, runBuild, setTab, undo, restore, openCode, runTests, updateSettings } = ws;
+  const buildNow = project.stage === "plan" && !!plan && !ws.build;
+  const suggestions = useMemo<CommandItem[]>(() => {
+    const out: CommandItem[] = [];
+    if (pendingProposal && isPro) out.push({ id: "review", label: "Review the proposed change", icon: GitCompare, run: () => setTab("review") });
+    if (issues[0]) out.push({ id: "fix", label: `Fix it: ${issues[0].plain}`, icon: Wrench, run: () => void fixIssue(issues[0].id) });
+    if (buildNow) out.push({ id: "build", label: "Build this", icon: Hammer, run: () => void runBuild() });
+    if (out.length === 0) out.push({ id: "new", label: "New project", icon: Plus, run: () => router.push("/home?new=1") });
+    return out;
+  }, [pendingProposal, isPro, issues, buildNow, setTab, fixIssue, runBuild, router]);
+  useRegisterCommands("suggestions", suggestions);
+
+  // Memoised by the React Compiler; registering re-renders only the palette.
+  const ready = project.stage === "ready";
+  const others = versions.filter((v) => v.id !== currentVersionId).sort((a, b) => b.number - a.number);
+  const paths = Object.keys(currentVersion?.files ?? {}).sort();
+  const commands: CommandItem[] = [
+    ...visibleTabs.map((t) => ({
+      id: `tab-${t.id}`,
+      label: `Go to ${t.label}`,
+      icon: t.icon,
+      keywords: ["tab", "stage", "open"],
+      run: () => {
+        setTab(t.id);
+        setMobileView("app");
+      },
+    })),
+    { id: "chat", label: chatHidden ? "Show the chat" : "Hide the chat", icon: chatHidden ? PanelLeftOpen : PanelLeftClose, shortcut: ["⌘", "\\"], run: () => setChatHidden((h) => !h) },
+    ...(isPro ? [{ id: "drawer", label: drawer.open ? "Hide the drawer" : "Show terminal, logs and problems", icon: PanelBottom, shortcut: ["⌘", "J"], run: () => toggleDrawer() }] : []),
+    ...(canSelect ? [{ id: "select", label: "Select an element to edit", icon: MousePointerClick, shortcut: ["V"], run: () => setSelectOn(true) }] : []),
+    ...(previousVersion ? [{ id: "undo", label: "Undo last change", icon: Undo2, hint: `Back to v${previousVersion.number}`, run: () => void undo() }] : []),
+    ...(others.length
+      ? [
+          {
+            id: "restore",
+            label: "Restore a version…",
+            icon: History,
+            children: {
+              placeholder: "Pick a version to restore…",
+              items: others.map((v) => ({ id: `v-${v.id}`, label: `v${v.number} · ${v.summary}`, hint: timeAgo(v.createdAt), run: () => void restore(v.id) })),
+            },
+          },
+        ]
+      : []),
+    ...(isPro && paths.length
+      ? [
+          {
+            id: "open-file",
+            label: "Open file…",
+            icon: FileCode2,
+            children: { placeholder: "Search files…", items: paths.map((p) => ({ id: `file-${p}`, label: p, run: () => openCode(p) })) },
+          },
+        ]
+      : []),
+    ...(ready
+      ? [
+          {
+            id: "chat-mode",
+            label: chatMode === "build" ? "Switch the chat to Plan mode" : "Switch the chat to Build mode",
+            icon: chatMode === "build" ? Lightbulb : Hammer,
+            run: () => setChatMode((m) => (m === "build" ? "plan" : "build")),
+          },
+          { id: "test", label: "Run the testing agent", icon: FlaskConical, run: () => void runTests() },
+        ]
+      : []),
+    ...(ready && isPro
+      ? [
+          {
+            id: "review-setting",
+            label: settings.reviewChanges ? "Turn off diff review" : "Turn on diff review",
+            icon: GitCompare,
+            run: () => void updateSettings({ reviewChanges: !settings.reviewChanges }),
+          },
+        ]
+      : []),
+  ];
+  useRegisterCommands("workspace", commands);
+
   const pages = ws.plan?.pages ?? [];
   const currentRoute = pages.find((p) => p.id === route) ?? pages[0];
   const deployable = ws.project.stage === "ready" && !ws.build;
+  const showPreviewTools = tab === "preview" && pages.length > 0 && (ws.currentVersionId || ws.build?.previewReady);
 
   return (
     <div className="flex h-dvh flex-col bg-background">
@@ -175,6 +331,20 @@ export function Workspace(props: {
               </button>
             ))}
           </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={palette.open}
+                aria-label="Search and commands"
+                aria-keyshortcuts="Meta+K"
+                className="hidden h-7 items-center rounded-md border border-border bg-card px-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground sm:inline-flex"
+              >
+                ⌘K
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Search and commands</TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label="GitHub" onClick={() => toast("GitHub sync arrives in the GitHub milestone")}>
@@ -214,9 +384,10 @@ export function Workspace(props: {
             role="tab"
             aria-selected={mobileView === v}
             onClick={() => setMobileView(v)}
-            className={cn("h-8 flex-1 rounded-md text-sm text-muted-foreground capitalize", mobileView === v && "bg-muted font-medium text-foreground")}
+            className={cn("relative h-8 flex-1 rounded-md text-sm text-muted-foreground capitalize", mobileView === v && "bg-muted font-medium text-foreground")}
           >
             {v === "chat" ? "Chat" : "App"}
+            {v === "app" && ws.issues.length > 0 && <span className="absolute top-2 ml-1 size-1.5 rounded-full bg-destructive" aria-label="The app has a problem" />}
           </button>
         ))}
       </div>
@@ -236,7 +407,7 @@ export function Workspace(props: {
               <ChatMessages ws={ws} isPro={isPro} onSend={send} />
             </div>
             <div className="p-3 pt-0">
-              <ChatComposer ws={ws} mode={chatMode} setMode={setChatMode} onSend={send} />
+              <ChatComposer ws={ws} isPro={isPro} mode={chatMode} setMode={setChatMode} onSend={send} onOpenDrawer={() => toggleDrawer("terminal")} />
             </div>
           </div>
         </aside>
@@ -273,10 +444,16 @@ export function Workspace(props: {
                   className={cn(
                     "relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground",
                     tab === id && "bg-muted font-medium text-foreground",
+                    id === "review" && tab !== id && "text-brand-text",
                   )}
                 >
                   <Icon className="size-3.5" />
                   {label}
+                  {id === "review" && ws.pendingProposal && (
+                    <span className="min-w-4 rounded-full bg-brand px-1 text-center font-mono text-[10px] leading-4 text-brand-foreground" aria-label={`${ws.pendingProposal.data.files.length} files`}>
+                      {ws.pendingProposal.data.files.length}
+                    </span>
+                  )}
                   {id === "plan" && ws.planDirty && <span className="size-1.5 rounded-full bg-warning" aria-label="Unapplied changes" />}
                   {id === "code" && ws.build && <span className="size-1.5 animate-pulse rounded-full bg-brand" aria-label="Writing files" />}
                 </button>
@@ -303,7 +480,7 @@ export function Workspace(props: {
               )}
             </div>
 
-            {tab === "preview" && pages.length > 0 && (ws.currentVersionId || ws.build?.previewReady) && (
+            {showPreviewTools && (
               <div className="flex shrink-0 items-center gap-1">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -346,6 +523,26 @@ export function Workspace(props: {
                     </button>
                   ))}
                 </div>
+                {canSelect && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Select an element to edit"
+                        aria-pressed={selecting}
+                        aria-keyshortcuts="V"
+                        onClick={() => setSelectOn(!selectOn)}
+                        className={cn("text-muted-foreground", selecting && "bg-brand-soft text-brand-text hover:bg-brand-soft hover:text-brand-text")}
+                      >
+                        <MousePointerClick />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {selecting ? "Stop selecting" : "Select an element to edit it"} <span className="opacity-60">V</span>
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 <Button variant="ghost" size="icon-sm" aria-label="Reload preview" title="Reload" className="text-muted-foreground" onClick={() => setNonce((n) => n + 1)}>
                   <RotateCw />
                 </Button>
@@ -356,12 +553,44 @@ export function Workspace(props: {
                 </Button>
               </div>
             )}
+            {isPro && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Terminal, logs and problems"
+                    aria-pressed={drawer.open}
+                    aria-keyshortcuts="Meta+J"
+                    onClick={() => toggleDrawer()}
+                    className={cn("relative shrink-0 text-muted-foreground", drawer.open && "bg-muted text-foreground")}
+                  >
+                    <PanelBottom />
+                    {!drawer.open && ws.issues.length > 0 && <span className="absolute top-1 right-1 size-1.5 rounded-full bg-destructive" />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Terminal, logs and problems <span className="opacity-60">⌘J</span>
+                </TooltipContent>
+              </Tooltip>
+            )}
           </div>
 
-          <div className={cn("relative min-h-0 flex-1", tab === "preview" ? "bg-sunken" : "bg-background", tab !== "code" && "overflow-y-auto scrollbar-thin")}>
+          <div className={cn("relative min-h-0 flex-1", tab === "preview" ? "bg-sunken" : "bg-background", tab !== "code" && tab !== "review" && "overflow-y-auto scrollbar-thin")}>
             {tab === "preview" && <div className="bg-grid-major pointer-events-none absolute inset-0" />}
             <div className="relative h-full">
-              {tab === "preview" && <PreviewPanel ws={ws} device={device} nonce={nonce} onRoute={onRoute} />}
+              {tab === "preview" && (
+                <PreviewPanel
+                  ws={ws}
+                  device={device}
+                  nonce={nonce}
+                  route={route}
+                  onRoute={onRoute}
+                  isPro={isPro}
+                  select={{ on: selecting, setOn: setSelectOn, target: selectTarget, setTarget: setSelectTarget }}
+                />
+              )}
+              {tab === "review" && <ReviewPanel ws={ws} />}
               {tab === "plan" && <PlanPanel ws={ws} isPro={isPro} />}
               {tab === "agents" && <AgentsPanel ws={ws} isPro={isPro} />}
               {tab === "data" && <DataPanel ws={ws} isPro={isPro} />}
@@ -370,6 +599,19 @@ export function Workspace(props: {
               {tab === "settings" && <SettingsPanel ws={ws} isPro={isPro} />}
             </div>
           </div>
+          {isPro && drawerMounted && (
+            <BottomDrawer
+              ws={ws}
+              user={props.user}
+              open={drawer.open}
+              height={drawer.height}
+              onResize={(h) => setDrawer((d) => ({ ...d, height: h }))}
+              onResizeEnd={(h) => saveDrawer({ ...drawer, height: h })}
+              tab={drawer.tab}
+              onTab={(t) => saveDrawer({ ...drawer, tab: t })}
+              onClose={() => saveDrawer({ ...drawer, open: false })}
+            />
+          )}
         </section>
       </div>
     </div>

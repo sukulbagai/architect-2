@@ -1,4 +1,5 @@
 import { APP_THEMES } from "./themes";
+import { editKind, sizePx } from "./visual";
 import type { Plan, PlanAgent, PlanCollection, PlanPage } from "./types";
 
 /**
@@ -84,8 +85,75 @@ h1, h2, h3 {
   padding: 8px 14px;
   font-weight: 600;
 }
+${visualEditCss(plan)}`;
+}
+
+/** Emphasis and size set with visual edits, as rules on each element's data-edit id. */
+function visualEditCss(plan: Plan) {
+  const entries = Object.entries(plan.ui.styles ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return "";
+  const rules = entries.map(([id, s]) => {
+    const kind = editKind(id);
+    const decl: string[] = [];
+    if (kind === "button") {
+      if (s.tone === "muted") decl.push("background: var(--sunken);", "color: var(--text);");
+      if (s.tone === "accent") decl.push("box-shadow: 0 0 0 3px var(--accent-soft);");
+    } else if (kind === "banner") {
+      if (s.tone === "muted") decl.push("background: var(--sunken);", "color: var(--text);", "border-bottom: var(--border-width) solid var(--border);");
+    } else if (s.tone) {
+      decl.push(`color: var(--${s.tone === "accent" ? "accent" : "muted"});`);
+    }
+    if (s.size) decl.push(`font-size: ${sizePx(kind, s.size) / 16}rem;`);
+    return `[data-edit="${id}"] { ${decl.join(" ")} }`;
+  });
+  return `\n/* Visual edits */\n${rules.join("\n")}\n`;
+}
+
+/** Text a visual edit set on an element with no plan field of its own ("" hides it). */
+function label(plan: Plan, id: string, fallback: string) {
+  return plan.ui.labels?.[id] ?? fallback;
+}
+
+/** Where a page's component lives for a stack. Issues point at this file. */
+export function pagePath(plan: Plan, page: PlanPage, stack: string = "react-vite") {
+  if (stack === "nextjs") return page.id === plan.pages[0]?.id ? "app/page.tsx" : `app/${page.id}/page.tsx`;
+  return `${stack === "fastapi-react" ? "frontend/" : ""}src/pages/${pascal(page.name)}.tsx`;
+}
+
+function collectionHookFile() {
+  return `import { useEffect, useState } from "react";
+
+type Result<T> = { data: { items?: T[] }; loading: boolean; error: Error | null };
+
+/**
+ * Loads a collection from the API. Until the first response arrives, \`data\` is an empty object,
+ * so read \`data.items\` defensively.
+ */
+export function useCollection<T = { id: string }>(name: string): Result<T> {
+  const [state, setState] = useState<Result<T>>({ data: {}, loading: true, error: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(\`/api/collections/\${name}\`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(\`\${res.status}\`))))
+      .then((data) => !cancelled && setState({ data, loading: false, error: null }))
+      .catch((error) => !cancelled && setState({ data: {}, loading: false, error }));
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
+
+  return state;
+}
 `;
 }
+
+function usesLiveData(plan: Plan) {
+  return plan.pages.some((p) => p.collection && liveState(p, plan) !== "none");
+}
+
+/** The line an open issue plants in a page: it maps over items that haven't loaded yet. */
+export const BUGGY_LINE = "const live = data.items.map((item) => item.id);";
 
 function dataFile(c: PlanCollection, importPath = "") {
   const typeName = pascal(c.singular);
@@ -155,16 +223,63 @@ export async function runAgent(agent: AgentId, input: string, context?: Record<s
 // Pages
 // ---------------------------------------------------------------------------------------------
 
+/** Whether a page loads live data, and whether that code is still missing its guard. */
+function liveState(page: PlanPage, plan: Plan): "none" | "buggy" | "guarded" {
+  if (plan.issues?.some((i) => i.pageId === page.id)) return "buggy";
+  if (plan.guards?.includes(page.id)) return "guarded";
+  return "none";
+}
+
+/**
+ * Pages that load live data get a few extra lines. With an open issue the code maps over
+ * `data.items` before it exists (the crash the preview shows); the fix guards it and adds a
+ * loading state, so the version diff reads like a real fix.
+ */
+function withLiveData(source: string, page: PlanPage, c: PlanCollection, state: "buggy" | "guarded", lib: string) {
+  const lines = source.split("\n");
+  const lastImport = lines.reduce((at, l, i) => (l.startsWith("import ") ? i : at), -1);
+  lines.splice(lastImport + 1, 0, `import { useCollection } from "${lib}/useCollection";`);
+  const fn = lines.findIndex((l) => l.startsWith("export default function"));
+  const body =
+    state === "buggy"
+      ? [
+          `  // Live ${c.name.toLowerCase()} from the API; the sample rows above are the fallback.`,
+          `  const { data } = useCollection("${c.id}");`,
+          `  ${BUGGY_LINE}`,
+        ]
+      : [
+          `  // Live ${c.name.toLowerCase()} from the API; the sample rows above are the fallback.`,
+          `  const { data, loading } = useCollection("${c.id}");`,
+          `  // Items arrive after the first render, so guard the empty state.`,
+          `  const live = loading ? [] : (data.items ?? []).map((item) => item.id);`,
+        ];
+  lines.splice(fn + 1, 0, ...body);
+  const headerEnd = lines.findIndex((l) => l.trim() === "</header>");
+  const status =
+    state === "buggy"
+      ? [`        <span className="sync">{live.length} live</span>`]
+      : [`        <span className="sync">{loading ? "Loading ${c.name.toLowerCase()}…" : \`\${live.length} live\`}</span>`];
+  if (headerEnd > 0) lines.splice(headerEnd, 0, ...status);
+  return lines.join("\n");
+}
+
 function pageComponent(page: PlanPage, plan: Plan, paths: { data: string; lib: string; components: string }) {
+  const source = pageSource(page, plan, paths);
+  const c = plan.data.find((d) => d.id === page.collection);
+  const state = liveState(page, plan);
+  return c && state !== "none" ? withLiveData(source, page, c, state, paths.lib) : source;
+}
+
+function pageSource(page: PlanPage, plan: Plan, paths: { data: string; lib: string; components: string }) {
   const name = pascal(page.name);
   const c = plan.data.find((d) => d.id === page.collection) ?? plan.data[0];
   const agent = plan.agents.find((a) => a.id === page.agent) ?? plan.agents[0];
   const dataImport = c ? `import { ${camel(c.name)} } from "${paths.data}/${c.id}";\n` : "";
   const agentImport = agent ? `import { runAgent } from "${paths.lib}/agents";\n` : "";
+  const title = label(plan, `title-${page.id}`, page.name);
+  const purpose = label(plan, `purpose-${page.id}`, page.purpose);
   const header = `      <header className="page-header">
-        <h1>${page.name}</h1>
-        <p>${page.purpose}</p>
-      </header>`;
+${title ? `        <h1 data-edit="title-${page.id}">${title}</h1>\n` : ""}${purpose ? `        <p data-edit="purpose-${page.id}">${purpose}</p>\n` : ""}      </header>`;
 
   switch (page.kind) {
     case "dashboard": {
@@ -185,11 +300,11 @@ export default function ${name}() {
     <div className="page">
 ${header}
       <section className="stats">
-        <StatCard label="Total ${c?.name.toLowerCase() ?? "items"}" value={rows.length} />
-${byStatus_tiles(c)}${money ? `        <StatCard label="Total ${money.label.toLowerCase()}" value={rows.reduce((sum, r) => sum + r.${money.key}, 0)} format="money" />\n` : ""}      </section>
+        <StatCard data-edit="stat-${page.id}-0" label="${label(plan, `stat-${page.id}-0`, `Total ${c?.name.toLowerCase() ?? "items"}`)}" value={rows.length} />
+${byStatus_tiles(plan, page, c)}${money ? `        <StatCard data-edit="stat-${page.id}-2" label="${label(plan, `stat-${page.id}-2`, `Total ${money.label.toLowerCase()}`)}" value={rows.reduce((sum, r) => sum + r.${money.key}, 0)} format="money" />\n` : ""}      </section>
 
       <section className="card">
-        <h2>By ${c?.statusField ?? "status"}</h2>
+        <h2 data-edit="card-${page.id}-1">${label(plan, `card-${page.id}-1`, `By ${c?.statusField ?? "status"}`)}</h2>
         <ul className="bars">
           {byStatus.map(([status, count]) => (
             <li key={status}>
@@ -377,7 +492,7 @@ export default function ${name}() {
     <div className="page">
 ${header}
       <section className="card">
-        <h2>Connections</h2>
+        <h2 data-edit="card-${page.id}-0">${label(plan, `card-${page.id}-0`, "Connections")}</h2>
         <ul>
           {INTEGRATIONS.map((name) => (
             <li key={name}>
@@ -387,7 +502,7 @@ ${header}
         </ul>
       </section>
       <section className="card">
-        <h2>Notifications</h2>
+        <h2 data-edit="card-${page.id}-1">${label(plan, `card-${page.id}-1`, "Notifications")}</h2>
         <label><input type="checkbox" defaultChecked /> Email me a daily summary</label>
         <label><input type="checkbox" /> Notify me when an agent needs approval</label>
       </section>
@@ -398,11 +513,11 @@ ${header}
   }
 }
 
-function byStatus_tiles(c?: PlanCollection) {
+function byStatus_tiles(plan: Plan, page: PlanPage, c?: PlanCollection) {
   if (!c?.statusField) return "";
   const first = String(c.rows[0]?.[c.statusField] ?? "");
   if (!first) return "";
-  return `        <StatCard label="${first}" value={rows.filter((r) => r.${c.statusField} === "${first}").length} tone="accent" />\n`;
+  return `        <StatCard data-edit="stat-${page.id}-1" label="${label(plan, `stat-${page.id}-1`, first)}" value={rows.filter((r) => r.${c.statusField} === "${first}").length} tone="accent" />\n`;
 }
 
 function statusPill() {
@@ -422,9 +537,11 @@ export function StatusPill({ value }: { value: string }) {
 function statCard() {
   return `const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
-export function StatCard({ label, value, format, tone }: { label: string; value: number; format?: "money"; tone?: "accent" }) {
+type Props = { label: string; value: number; format?: "money"; tone?: "accent"; "data-edit"?: string };
+
+export function StatCard({ label, value, format, tone, ...rest }: Props) {
   return (
-    <div className={\`card stat \${tone ?? ""}\`}>
+    <div className={\`card stat \${tone ?? ""}\`} {...rest}>
       <span>{label}</span>
       <strong>{format === "money" ? money.format(value) : value}</strong>
     </div>
@@ -436,24 +553,27 @@ export function StatCard({ label, value, format, tone }: { label: string; value:
 function layout(plan: Plan, routeFor: (p: PlanPage) => string, linkImport: string, linkTag: "Link" | "NavLink") {
   return `${linkImport}
 const NAV = [
-${plan.pages.map((p) => `  { to: "${routeFor(p)}", label: "${p.name}" },`).join("\n")}
+${plan.pages
+  .filter((p) => label(plan, `nav-${p.id}`, p.name) !== "")
+  .map((p) => `  { id: "${p.id}", to: "${routeFor(p)}", label: "${p.name}" },`)
+  .join("\n")}
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="app">
       <aside className="sidebar">
-        <strong className="brand">${plan.appName}</strong>
+        <strong className="brand" data-edit="app-name">${plan.appName}</strong>
         <nav>
           {NAV.map((item) => (
-            <${linkTag} key={item.to} ${linkTag === "Link" ? "href" : "to"}={item.to}>
+            <${linkTag} key={item.to} ${linkTag === "Link" ? "href" : "to"}={item.to} data-edit={\`nav-\${item.id}\`}>
               {item.label}
             </${linkTag}>
           ))}
         </nav>
       </aside>
       <main>
-${plan.ui.banner ? `        <div className="banner">${plan.ui.banner}</div>\n` : ""}        {children}
+${plan.ui.banner ? `        <div className="banner" data-edit="banner">${plan.ui.banner}</div>\n` : ""}        {children}
       </main>
     </div>
   );
@@ -566,6 +686,7 @@ ${plan.pages.map((pg) => `        <Route path="${route(pg)}" element={<${pascal(
   files[p("src/components/StatusPill.tsx")] = statusPill();
   files[p("src/components/StatCard.tsx")] = statCard();
   files[p("src/lib/agents.ts")] = agentsClient(plan, "/api/agents/${agent}/run");
+  if (usesLiveData(plan)) files[p("src/lib/useCollection.ts")] = collectionHookFile();
   for (const c of plan.data) files[p(`src/data/${c.id}.ts`)] = dataFile(c);
   for (const pg of plan.pages) {
     files[p(`src/pages/${pascal(pg.name)}.tsx`)] = pageComponent(pg, plan, { data: "../data", lib: "../lib", components: "../components" });
@@ -611,6 +732,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   files["components/StatusPill.tsx"] = statusPill();
   files["components/StatCard.tsx"] = statCard();
   files["lib/agents.ts"] = agentsClient(plan, "/api/agents/${agent}/run");
+  if (usesLiveData(plan)) files["lib/useCollection.ts"] = collectionHookFile();
   files["app/api/agents/[id]/route.ts"] = `import { NextResponse } from "next/server";
 import { loadAgent } from "@/lib/agent-runtime";
 
@@ -714,6 +836,9 @@ export function generateFiles(plan: Plan, stack: string = "react-vite"): Record<
     .filter((i) => i !== "Knowledge base" && i !== "Web search")
     .map((i) => `${i.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_TOKEN=`)
     .join("\n")}\n`;
-  for (const [path, content] of Object.entries(plan.fileOverrides ?? {})) files[path] = content;
+  for (const [path, content] of Object.entries(plan.fileOverrides ?? {})) {
+    if (content === null) delete files[path];
+    else files[path] = content;
+  }
   return Object.fromEntries(Object.entries(files).sort(([a], [b]) => a.localeCompare(b)));
 }

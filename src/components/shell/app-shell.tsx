@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Search,
   Settings,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -37,6 +38,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Kbd } from "@/components/ui/kbd";
+import { useCommandPalette } from "@/components/command/command-provider";
 import { setMode } from "@/lib/actions/workspace";
 import { signOut } from "@/lib/actions/auth";
 import type { Mode, ProjectStatus } from "@/db/schema";
@@ -128,6 +131,7 @@ function Rail({
   onToggle?: () => void;
 }) {
   const pathname = usePathname();
+  const palette = useCommandPalette();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -170,6 +174,26 @@ function Rail({
               {!collapsed && <span>New project</span>}
             </Link>
           </Button>
+        </RailTooltip>
+        <RailTooltip label="Search ⌘K" show={collapsed}>
+          <button
+            type="button"
+            onClick={palette.open}
+            aria-label="Search and commands"
+            aria-keyshortcuts="Meta+K"
+            className={cn(
+              "mt-1.5 flex h-8 items-center gap-2.5 rounded-lg text-sm text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground",
+              collapsed ? "w-9 justify-center" : "w-full px-2.5",
+            )}
+          >
+            <Search className="size-4 shrink-0" />
+            {!collapsed && (
+              <>
+                <span className="flex-1 text-left">Search…</span>
+                <Kbd className="bg-sidebar-accent font-mono text-[10.5px]">⌘K</Kbd>
+              </>
+            )}
+          </button>
         </RailTooltip>
       </div>
 

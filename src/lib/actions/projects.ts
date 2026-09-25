@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { messages, projects, type ProjectSettings } from "@/db/schema";
@@ -132,4 +132,15 @@ export async function deleteProject(id: string) {
   const { db, project } = await ownedProject(id);
   await db.delete(projects).where(eq(projects.id, project.id));
   revalidatePath("/", "layout");
+}
+
+/** Every project in the workspace, most recent first, for the command palette. */
+export async function listProjects() {
+  const ws = await requireWorkspace();
+  const db = await getDb();
+  return db
+    .select({ id: projects.id, name: projects.name, status: projects.status, stage: projects.stage })
+    .from(projects)
+    .where(eq(projects.workspaceId, ws.id))
+    .orderBy(desc(projects.updatedAt));
 }

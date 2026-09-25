@@ -14,7 +14,7 @@ export type ProjectStatus = "draft" | "building" | "live" | "error";
 export type ProjectStage = "plan" | "build" | "ready";
 export type ProjectSource = "prompt" | "template" | "import";
 
-export type MessageKind = "chat" | "questions" | "plan" | "plan-reply" | "build" | "edit" | "event";
+export type MessageKind = "chat" | "questions" | "plan" | "plan-reply" | "build" | "edit" | "event" | "proposal" | "test";
 
 export type ProjectSettings = {
   themePreset?: string;
@@ -23,6 +23,10 @@ export type ProjectSettings = {
   planFirst?: boolean;
   attachments?: { name: string; size: number; kind: "document" | "data" | "image" }[];
   templateId?: string;
+  /** Pro: each Build-mode change arrives as a diff to accept or reject. Off by default. */
+  reviewChanges?: boolean;
+  /** A testing agent checks the app after each change. Unset means on in Simple, off in Pro. */
+  testAfterChanges?: boolean;
 };
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();

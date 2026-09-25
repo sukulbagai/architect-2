@@ -61,7 +61,8 @@ export function CodePanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
   }, [ws.build, ws.currentVersion]);
   const paths = useMemo(() => Object.keys(files).sort(), [files]);
   const tree = useMemo(() => buildTree(paths), [paths]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const selected = ws.codeFile;
+  const setSelected = ws.setCodeFile;
   const [follow, setFollow] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -217,6 +218,7 @@ export function CodePanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
               key={active}
               path={active}
               value={content}
+              line={ws.codeLine && ws.codeFile === active ? ws.codeLine : undefined}
               readOnly={!editable}
               onChange={(v) => setDrafts((d) => ({ ...d, [active]: v }))}
             />

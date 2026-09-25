@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import {
   Calendar,
   History,
@@ -41,6 +41,27 @@ const ICONS: Record<string, LucideIcon> = {
   receipt: Receipt,
   list: List,
 };
+
+/** Runtime log lines the app sends to the Workspace's Logs panel ("GET /queue 200 · 38ms"). */
+export type AppLog = (level: "info" | "warn" | "error", message: string) => void;
+export const AppLogContext = createContext<AppLog>(() => {});
+export const useAppLog = () => useContext(AppLogContext);
+
+/** What an agent run would log on the server: the call, its latency and tokens, and any warnings. */
+export function logAgentRun(log: AppLog, agent: PlanAgent, seed: number) {
+  const h = hashString(`${agent.id}:${seed}`);
+  const ms = 520 + (h % 900);
+  const tokens = 640 + (h % 1400);
+  log("info", `POST /api/agents/${agent.id}/run 200 · ${ms}ms · ${tokens.toLocaleString("en-US")} tokens`);
+  if (/escalat|flag|review/i.test(`${agent.id} ${agent.role}`) && h % 2 === 0) {
+    log("warn", `${agent.id}: confidence 0.${52 + (h % 7)} < 0.6, routed to a person`);
+  }
+  for (const tool of agent.tools.slice(0, 1)) {
+    if (tool === "Slack") log("info", `slack: posted to #${agent.id === "escalation" ? "support-leads" : "team"} · 1 message`);
+    else if (tool === "Gmail") log("info", `gmail: drafted 1 message · not sent`);
+    else if (tool === "Knowledge base") log("info", `knowledge: 3 passages retrieved · top score 0.${81 + (h % 15)}`);
+  }
+}
 
 export function PageIcon({ name, className }: { name: string; className?: string }) {
   const Icon = ICONS[name] ?? List;
@@ -145,11 +166,15 @@ export function AgentAnswer({ agent, sample, runKey }: { agent: PlanAgent; sampl
   const [phase, setPhase] = useState<"trace" | "answer">("trace");
   const text = agent.samples[sample % agent.samples.length] ?? "Done.";
   const typed = useTyping(text, phase === "answer");
+  const log = useAppLog();
 
   useEffect(() => {
-    const t = setTimeout(() => setPhase("answer"), 900);
+    const t = setTimeout(() => {
+      setPhase("answer");
+      logAgentRun(log, agent, runKey + sample);
+    }, 900);
     return () => clearTimeout(t);
-  }, [runKey]);
+  }, [runKey, agent, sample, log]);
 
   return (
     <div className="space-y-2.5">

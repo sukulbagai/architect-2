@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
-import { EditorView } from "@codemirror/view";
+import { StateEffect, StateField } from "@codemirror/state";
+import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { javascript } from "@codemirror/lang-javascript";
@@ -27,6 +28,26 @@ const chrome = EditorView.theme({
   "&.cm-focused": { outline: "none" },
   ".cm-cursor": { borderLeftColor: "var(--brand-text)" },
   ".cm-foldGutter .cm-gutterElement": { color: "var(--subtle-foreground)" },
+  ".cm-flash-line": {
+    backgroundColor: "color-mix(in oklab, var(--destructive) 13%, transparent)",
+    boxShadow: "inset 2px 0 0 var(--destructive)",
+  },
+});
+
+/** Highlights one line, e.g. where an error was thrown. */
+const setFlash = StateEffect.define<number | null>();
+const flashLine = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    for (const e of tr.effects) {
+      if (!e.is(setFlash)) continue;
+      if (e.value === null) return Decoration.none;
+      const line = tr.state.doc.line(Math.min(Math.max(1, e.value), tr.state.doc.lines));
+      return Decoration.set([Decoration.line({ class: "cm-flash-line" }).range(line.from)]);
+    }
+    return deco.map(tr.changes);
+  },
+  provide: (f) => EditorView.decorations.from(f),
 });
 
 const highlight = HighlightStyle.define([
@@ -59,15 +80,31 @@ export default function CodeEditor({
   value,
   onChange,
   readOnly,
+  line,
 }: {
   path: string;
   value: string;
   onChange?: (v: string) => void;
   readOnly?: boolean;
+  /** Scroll to and highlight this line. `n` changes each time, so the same line can be shown again. */
+  line?: { line: number; n: number };
 }) {
-  const extensions = useMemo(() => [chrome, syntaxHighlighting(highlight), EditorView.lineWrapping, ...languageFor(path)], [path]);
+  const extensions = useMemo(() => [chrome, syntaxHighlighting(highlight), EditorView.lineWrapping, flashLine, ...languageFor(path)], [path]);
+  const [view, setView] = useState<EditorView | null>(null);
+
+  useEffect(() => {
+    if (!view || !line) return;
+    const doc = view.state.doc;
+    const target = doc.line(Math.min(Math.max(1, line.line), doc.lines));
+    view.dispatch({
+      effects: [setFlash.of(line.line), EditorView.scrollIntoView(target.from, { y: "center" })],
+      selection: { anchor: target.from },
+    });
+  }, [view, line]);
+
   return (
     <CodeMirror
+      onCreateEditor={(v) => setView(v)}
       value={value}
       onChange={onChange}
       readOnly={readOnly}

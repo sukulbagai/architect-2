@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { LayoutTemplate, Sparkles } from "lucide-react";
 import { GithubGlyph } from "@/components/auth/brand-icons";
 import { toast } from "sonner";
@@ -28,8 +29,15 @@ const OPTIONS = [
   },
 ] as const;
 
-export function StartOptions({ className, role }: { className?: string; role: string | null }) {
+export function StartOptions({ className, role, openConsultant = false }: { className?: string; role: string | null; openConsultant?: boolean }) {
+  const router = useRouter();
   const [consultant, setConsultant] = useState(false);
+  // "Ask the Consultant" in the command palette links here with ?consultant=1.
+  const open = consultant || openConsultant;
+  function onOpenChange(o: boolean) {
+    setConsultant(o);
+    if (!o && openConsultant) router.replace("/home", { scroll: false });
+  }
 
   function pick(id: (typeof OPTIONS)[number]["id"]) {
     if (id === "template") {
@@ -47,7 +55,7 @@ export function StartOptions({ className, role }: { className?: string; role: st
 
   return (
     <div className={cn("grid gap-2 sm:grid-cols-3", className)}>
-      <ConsultantDialog open={consultant} onOpenChange={setConsultant} role={role} />
+      <ConsultantDialog open={open} onOpenChange={onOpenChange} role={role} />
       <p className="annotation sm:col-span-3">Or start another way</p>
       {OPTIONS.map(({ id, icon: Icon, title, body }) => (
         <button

@@ -3,8 +3,22 @@
 import { useMemo, useState } from "react";
 import { ArrowUp, Check, Copy, Loader2, Plus, RefreshCw, Search, Sparkles, X } from "lucide-react";
 import { seededRandom } from "@/lib/seeded";
+import { sizePx } from "@/lib/sim/visual";
 import type { Plan, PlanAgent, PlanCollection, PlanPage, Row } from "@/lib/sim/types";
-import { AgentAnswer, Avatar, FieldValue, Pill, formatValue, useTyping } from "./bits";
+import { AgentAnswer, Avatar, FieldValue, Pill, formatValue, logAgentRun, useAppLog, useTyping } from "./bits";
+import { useEditable } from "./editable";
+
+/** A card heading that visual edits can rename, restyle or hide. */
+function CardTitle({ id, text, className, children }: { id: string; text: string; className?: string; children?: React.ReactNode }) {
+  const t = useEditable()(id, text);
+  if (t.hidden) return null;
+  return (
+    <p {...t.attrs} className={className ?? "text-sm font-semibold"} style={{ ...t.style, opacity: t.faded ? 0.4 : undefined }}>
+      {children}
+      <span data-edit-text="">{t.text || text}</span>
+    </p>
+  );
+}
 
 type Ctx = { plan: Plan; page: PlanPage; collection?: PlanCollection; agent?: PlanAgent };
 
@@ -47,22 +61,30 @@ function Dashboard({ plan, page, collection, agent }: Ctx) {
   tiles.push({ label: "Agent runs this week", value: String(40 + rows.length * 7) });
   const [ask, setAsk] = useState("");
   const [run, setRun] = useState(0);
+  const ed = useEditable();
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {tiles.map((t) => (
-          <div key={t.label} className="a-card p-4">
-            <p className="a-muted text-xs">{t.label}</p>
-            <p className="a-heading mt-1.5 text-2xl font-semibold tabular-nums" style={t.accent ? { color: "var(--a-accent)" } : undefined}>
-              {t.value}
-            </p>
-          </div>
-        ))}
+        {tiles.map((t, i) => {
+          const e = ed(`stat-${page.id}-${i}`, t.label);
+          if (e.hidden) return null;
+          const tone = e.raw.tone === "accent" || (t.accent && e.raw.tone !== "muted") ? "var(--a-accent)" : e.raw.tone === "muted" ? "var(--a-muted)" : undefined;
+          return (
+            <div key={t.label} {...e.attrs} className="a-card p-4" style={{ opacity: e.faded ? 0.4 : undefined }}>
+              <p className="a-muted text-xs" data-edit-text="">
+                {e.text || t.label}
+              </p>
+              <p className="a-heading mt-1.5 text-2xl font-semibold tabular-nums" style={{ color: tone, fontSize: e.raw.size ? sizePx("stat", e.raw.size) : undefined }}>
+                {t.value}
+              </p>
+            </div>
+          );
+        })}
       </div>
       <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
         <div className="a-card p-4">
-          <p className="text-sm font-semibold">Activity, last 14 days</p>
+          <CardTitle id={`card-${page.id}-0`} text="Activity, last 14 days" />
           <div className="mt-4 flex h-32 items-end gap-1.5">
             {activity.map((v, i) => (
               <div key={i} className="flex-1 rounded-t-[3px]" style={{ height: `${(v / 15) * 100}%`, background: i === activity.length - 1 ? "var(--a-accent)" : "var(--a-accent-soft)" }} />
@@ -70,7 +92,7 @@ function Dashboard({ plan, page, collection, agent }: Ctx) {
           </div>
         </div>
         <div className="a-card p-4">
-          <p className="text-sm font-semibold">By {collection?.fields.find((f) => f.key === collection?.statusField)?.label.toLowerCase() ?? "status"}</p>
+          <CardTitle id={`card-${page.id}-1`} text={`By ${collection?.fields.find((f) => f.key === collection?.statusField)?.label.toLowerCase() ?? "status"}`} />
           <ul className="mt-3 space-y-2.5">
             {statusCounts.map(([s, n]) => (
               <li key={s} className="flex items-center gap-3 text-sm">
@@ -88,9 +110,9 @@ function Dashboard({ plan, page, collection, agent }: Ctx) {
       </div>
       <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
         <div className="a-card min-w-0 overflow-hidden">
-          <p className="border-b px-4 py-3 text-sm font-semibold" style={{ borderColor: "var(--a-border)" }}>
-            Recent {collection?.name.toLowerCase()}
-          </p>
+          <div className="border-b px-4 py-3" style={{ borderColor: "var(--a-border)" }}>
+            <CardTitle id={`card-${page.id}-2`} text={`Recent ${collection?.name.toLowerCase()}`} />
+          </div>
           <ul>
             {rows.slice(0, 4).map((r, i) => (
               <li key={i} className="flex items-center gap-3 border-b px-4 py-2.5 text-sm last:border-0" style={{ borderColor: "var(--a-border)" }}>
@@ -103,10 +125,9 @@ function Dashboard({ plan, page, collection, agent }: Ctx) {
         </div>
         {agent && (
           <div className="a-card flex min-w-0 flex-col p-4">
-            <p className="flex items-center gap-2 text-sm font-semibold">
+            <CardTitle id={`card-${page.id}-3`} text={`Ask ${agent.name}`} className="flex items-center gap-2 text-sm font-semibold">
               <Sparkles className="size-4" style={{ color: "var(--a-accent)" }} />
-              Ask {agent.name}
-            </p>
+            </CardTitle>
             <form
               className="mt-3 flex gap-2"
               onSubmit={(e) => {
@@ -131,7 +152,8 @@ function Dashboard({ plan, page, collection, agent }: Ctx) {
 
 // ---------------------------------------------------------------------------------------------
 
-function ListPage({ plan, collection, agent }: Ctx) {
+function ListPage({ plan, page, collection, agent }: Ctx) {
+  const ed = useEditable();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All");
   const [extra, setExtra] = useState<Row[]>([]);
@@ -146,6 +168,7 @@ function ListPage({ plan, collection, agent }: Ctx) {
       (!query || Object.values(r).some((v) => String(v).toLowerCase().includes(query.toLowerCase()))),
   );
   const cols = collection.fields.slice(0, 6);
+  const cta = ed(`cta-${page.id}`, `New ${collection.singular.toLowerCase()}`);
 
   return (
     <div className="relative">
@@ -163,18 +186,22 @@ function ListPage({ plan, collection, agent }: Ctx) {
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          className="a-btn ml-auto"
-          onClick={() => {
-            const row: Row = {};
-            for (const f of collection.fields) row[f.key] = f.key === collection.titleField ? `New ${collection.singular.toLowerCase()}` : f.type === "status" ? String(collection.rows[0]?.[f.key] ?? "New") : "";
-            setExtra((e) => [row, ...e]);
-          }}
-        >
-          <Plus className="size-3.5" />
-          New {collection.singular.toLowerCase()}
-        </button>
+        {!cta.hidden && (
+          <button
+            type="button"
+            {...cta.attrs}
+            className="a-btn ml-auto"
+            style={{ ...cta.style, opacity: cta.faded ? 0.4 : undefined }}
+            onClick={() => {
+              const row: Row = {};
+              for (const f of collection.fields) row[f.key] = f.key === collection.titleField ? `New ${collection.singular.toLowerCase()}` : f.type === "status" ? String(collection.rows[0]?.[f.key] ?? "New") : "";
+              setExtra((e) => [row, ...e]);
+            }}
+          >
+            <Plus className="size-3.5" />
+            <span data-edit-text="">{cta.text || `New ${collection.singular.toLowerCase()}`}</span>
+          </button>
+        )}
       </div>
       <div className="a-card overflow-x-auto">
         <table className="a-table w-full" data-compact={plan.ui.compact ? "true" : undefined}>
@@ -395,6 +422,8 @@ function ChatPage({ plan, agent }: Ctx) {
 // ---------------------------------------------------------------------------------------------
 
 function RunPage({ plan, page, agent }: Ctx) {
+  const ed = useEditable();
+  const log = useAppLog();
   const [input, setInput] = useState("");
   const [state, setState] = useState<{ step: number; done: boolean } | null>(null);
   const pipeline = plan.agents;
@@ -406,8 +435,11 @@ function RunPage({ plan, page, agent }: Ctx) {
   function start() {
     if (!input.trim()) return;
     setState({ step: 0, done: false });
-    pipeline.forEach((_, i) => {
-      setTimeout(() => setState({ step: i + 1, done: i + 1 >= pipeline.length }), 1000 * (i + 1));
+    pipeline.forEach((a, i) => {
+      setTimeout(() => {
+        setState({ step: i + 1, done: i + 1 >= pipeline.length });
+        logAgentRun(log, a, i + input.length);
+      }, 1000 * (i + 1));
     });
   }
 
@@ -428,10 +460,23 @@ function RunPage({ plan, page, agent }: Ctx) {
           <p className="a-muted text-xs">
             {pipeline.length} agents: {pipeline.map((a) => a.name).join(" → ")}
           </p>
-          <button type="button" className="a-btn" onClick={start} disabled={!input.trim() || (state !== null && !state.done)}>
-            {state && !state.done ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-            {page.input?.cta ?? "Run"}
-          </button>
+          {(() => {
+            const cta = ed(`cta-${page.id}`, page.input?.cta ?? "Run");
+            if (cta.hidden) return null;
+            return (
+              <button
+                type="button"
+                {...cta.attrs}
+                className="a-btn"
+                style={{ ...cta.style, opacity: cta.faded ? 0.4 : undefined }}
+                onClick={start}
+                disabled={!input.trim() || (state !== null && !state.done)}
+              >
+                {state && !state.done ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                <span data-edit-text="">{cta.text || page.input?.cta || "Run"}</span>
+              </button>
+            );
+          })()}
         </div>
       </div>
 
@@ -483,13 +528,13 @@ function RunPage({ plan, page, agent }: Ctx) {
 
 // ---------------------------------------------------------------------------------------------
 
-function SettingsPage({ plan }: Ctx) {
+function SettingsPage({ plan, page }: Ctx) {
   const [toggles, setToggles] = useState({ digest: true, approvals: true, weekly: false });
   const team = ["Maya Chen", "Omar Haddad", "Lena Fischer"];
   return (
     <div className="max-w-3xl space-y-4">
       <section className="a-card p-4">
-        <p className="text-sm font-semibold">Connections</p>
+        <CardTitle id={`card-${page.id}-0`} text="Connections" />
         <ul className="mt-3 divide-y" style={{ borderColor: "var(--a-border)" }}>
           {(plan.integrations.length ? plan.integrations : ["None yet"]).map((name) => (
             <li key={name} className="flex items-center justify-between py-2.5 text-sm" style={{ borderColor: "var(--a-border)" }}>
@@ -503,7 +548,7 @@ function SettingsPage({ plan }: Ctx) {
         </ul>
       </section>
       <section className="a-card p-4">
-        <p className="text-sm font-semibold">Notifications</p>
+        <CardTitle id={`card-${page.id}-1`} text="Notifications" />
         <div className="mt-3 space-y-3 text-sm">
           {(
             [
@@ -528,7 +573,7 @@ function SettingsPage({ plan }: Ctx) {
         </div>
       </section>
       <section className="a-card p-4">
-        <p className="text-sm font-semibold">Team</p>
+        <CardTitle id={`card-${page.id}-2`} text="Team" />
         <ul className="mt-3 space-y-2.5">
           {team.map((n, i) => (
             <li key={n} className="flex items-center gap-3 text-sm">

@@ -1,11 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Menu, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, ChevronDown, Menu, X } from "lucide-react";
+import { hashString } from "@/lib/seeded";
 import { APP_THEMES } from "@/lib/sim/themes";
-import type { Plan } from "@/lib/sim/types";
-import { PageIcon } from "./bits";
+import { EDIT_KIND_LABEL, editKind } from "@/lib/sim/visual";
+import type { Issue, Plan } from "@/lib/sim/types";
+import { AppLogContext, PageIcon, type AppLog } from "./bits";
+import { EditProvider, useEditable, type EditDraft } from "./editable";
 import { PageBody } from "./pages";
+
+type Box = { top: number; left: number; width: number; height: number; label: string };
+
+function boxOf(el: Element): Box {
+  const r = el.getBoundingClientRect();
+  const id = (el as HTMLElement).dataset.edit ?? "";
+  return { top: r.top, left: r.left, width: r.width, height: r.height, label: EDIT_KIND_LABEL[editKind(id)] };
+}
+
+/** The text a visual edit changes: the element's labelled part if it has one, else all of it. */
+function textOf(el: HTMLElement) {
+  return (el.querySelector("[data-edit-text]")?.textContent ?? el.textContent ?? "").trim();
+}
+
+function isTyping(el: EventTarget | null) {
+  return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+}
 
 /**
  * Renders a generated app from its plan. It runs inside an iframe in the Workspace (and later on
@@ -15,12 +35,31 @@ export function PreviewApp({ plan, initialPage, embedded }: { plan: Plan; initia
   const theme = APP_THEMES[plan.ui.theme] ?? APP_THEMES.studio;
   const [pageId, setPageId] = useState(initialPage && plan.pages.some((p) => p.id === initialPage) ? initialPage : plan.pages[0]?.id);
   const [navOpen, setNavOpen] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [hover, setHover] = useState<Box | null>(null);
+  const [picked, setPicked] = useState<Box | null>(null);
+  const [draft, setDraft] = useState<EditDraft | null>(null);
+  const pickedEl = useRef<HTMLElement | null>(null);
   const page = plan.pages.find((p) => p.id === pageId) ?? plan.pages[0];
+  const issue = plan.issues?.find((i) => i.pageId === page?.id);
+
+  const post = useCallback(
+    (data: Record<string, unknown>) => {
+      if (embedded) window.parent.postMessage(data, window.location.origin);
+    },
+    [embedded],
+  );
+  const log = useCallback<AppLog>((level, message) => post({ type: "architect:log", level, message }), [post]);
 
   useEffect(() => {
-    if (!embedded) return;
-    window.parent.postMessage({ type: "architect:route", page: page?.id }, window.location.origin);
-  }, [page?.id, embedded]);
+    post({ type: "architect:route", page: page?.id });
+    if (!page) return;
+    const route = page.id === plan.pages[0]?.id ? "/" : `/${page.id}`;
+    log("info", `GET ${route} 200 · ${18 + (hashString(page.id) % 40)}ms`);
+    const c = plan.data.find((d) => d.id === page.collection);
+    if (c && page.kind !== "settings") log("info", `GET /api/collections/${c.id} ${issue ? "200 · still loading on first render" : `200 · ${12 + (hashString(c.id) % 30)}ms · ${c.rows.length} rows`}`);
+    if (issue) post({ type: "architect:error", issueId: issue.id, pageId: page.id });
+  }, [page, plan.pages, plan.data, issue, post, log]);
 
   useEffect(() => {
     if (!embedded) return;
@@ -28,25 +67,105 @@ export function PreviewApp({ plan, initialPage, embedded }: { plan: Plan; initia
       window.parent.postMessage({ type: "architect:ready", pages: plan.pages.map((p) => ({ id: p.id, name: p.name })) }, window.location.origin);
     function onMessage(e: MessageEvent) {
       if (e.origin !== window.location.origin) return;
-      if (e.data?.type === "architect:navigate" && typeof e.data.page === "string") setPageId(e.data.page);
+      const d = e.data;
+      if (d?.type === "architect:navigate" && typeof d.page === "string") setPageId(d.page);
       // The Workspace may start listening after this frame is already up, so it can ask again.
-      if (e.data?.type === "architect:ping") ready();
+      if (d?.type === "architect:ping") ready();
+      if (d?.type === "architect:select-mode") {
+        setSelecting(!!d.on);
+        setHover(null);
+        setPicked(null);
+        setDraft(null);
+        pickedEl.current = null;
+      }
+      if (d?.type === "architect:deselect") {
+        setPicked(null);
+        setDraft(null);
+        pickedEl.current = null;
+      }
+      if (d?.type === "architect:draft-edit") setDraft(d.draft ?? null);
     }
     window.addEventListener("message", onMessage);
     ready();
     return () => window.removeEventListener("message", onMessage);
   }, [embedded, plan.pages]);
 
+  // Workspace shortcuts keep working while focus is inside the app.
+  useEffect(() => {
+    if (!embedded) return;
+    function onKey(e: KeyboardEvent) {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && ["k", "j", "\\"].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        post({ type: "architect:key", key: e.key, meta: true });
+      } else if (!meta && !e.altKey && !isTyping(e.target) && (e.key === "v" || e.key === "?" || (e.key === "/" && e.shiftKey))) {
+        post({ type: "architect:key", key: e.key === "v" ? "v" : "?", meta: false });
+      } else if (e.key === "Escape" && selecting) {
+        post({ type: "architect:select-cancel" });
+        setSelecting(false);
+        setHover(null);
+        setPicked(null);
+        setDraft(null);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [embedded, post, selecting]);
+
+  // Select mode: hovering outlines editable elements; a click selects one and never reaches the app.
+  useEffect(() => {
+    if (!selecting) return;
+    const find = (t: EventTarget | null) => (t instanceof Element ? (t.closest("[data-edit]") as HTMLElement | null) : null);
+    const over = (e: PointerEvent) => {
+      const el = find(e.target);
+      setHover(el ? boxOf(el) : null);
+    };
+    const block = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const click = (e: MouseEvent) => {
+      block(e);
+      const el = find(e.target);
+      if (!el || !page) return;
+      pickedEl.current = el;
+      setPicked(boxOf(el));
+      setDraft(null);
+      const id = el.dataset.edit!;
+      post({ type: "architect:selected", target: { editId: id, kind: editKind(id), pageId: page.id, text: textOf(el) } });
+    };
+    const reflow = () => {
+      setHover(null);
+      if (pickedEl.current?.isConnected) setPicked(boxOf(pickedEl.current));
+    };
+    document.addEventListener("pointerover", over, true);
+    document.addEventListener("click", click, true);
+    document.addEventListener("mousedown", block, true);
+    document.addEventListener("submit", block, true);
+    window.addEventListener("scroll", reflow, true);
+    window.addEventListener("resize", reflow);
+    return () => {
+      document.removeEventListener("pointerover", over, true);
+      document.removeEventListener("click", click, true);
+      document.removeEventListener("mousedown", block, true);
+      document.removeEventListener("submit", block, true);
+      window.removeEventListener("scroll", reflow, true);
+      window.removeEventListener("resize", reflow);
+    };
+  }, [selecting, page, post]);
+
+  // A draft can change the selected element's size, so measure it again after it renders.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      if (pickedEl.current?.isConnected) setPicked(boxOf(pickedEl.current));
+    });
+    return () => cancelAnimationFrame(id);
+  }, [draft]);
+
   if (!page) return null;
   const collection = plan.data.find((c) => c.id === page.collection);
   const agent = plan.agents.find((a) => a.id === page.agent);
   const v = theme.vars;
-  const initials = plan.appName
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
 
   const style = {
     "--a-bg": v.bg,
@@ -71,33 +190,103 @@ export function PreviewApp({ plan, initialPage, embedded }: { plan: Plan; initia
     colorScheme: theme.dark ? "dark" : "light",
   } as React.CSSProperties;
 
+  return (
+    <EditProvider plan={plan} draft={draft}>
+      <AppLogContext.Provider value={log}>
+        <div className="arch-app" data-theme={theme.id} data-selecting={selecting ? "" : undefined} style={style}>
+          <style>{CSS}</style>
+          <Shell plan={plan} page={page} navOpen={navOpen} setNavOpen={setNavOpen} setPageId={setPageId}>
+            {issue ? <CrashState issue={issue} /> : <PageBody key={page.id} plan={plan} page={page} collection={collection} agent={agent} />}
+          </Shell>
+          {selecting && hover && !(picked && hover.top === picked.top && hover.left === picked.left) && <Outline box={hover} kind="hover" />}
+          {picked && <Outline box={picked} kind="picked" />}
+        </div>
+      </AppLogContext.Provider>
+    </EditProvider>
+  );
+}
+
+function Outline({ box, kind }: { box: Box; kind: "hover" | "picked" }) {
+  return (
+    <div
+      className={kind === "hover" ? "a-edit-hover" : "a-edit-picked"}
+      style={{ top: box.top - 3, left: box.left - 3, width: box.width + 6, height: box.height + 6 }}
+      data-below={box.top < 24 ? "" : undefined}
+      aria-hidden="true"
+    >
+      <span>{box.label}</span>
+    </div>
+  );
+}
+
+function Shell({
+  plan,
+  page,
+  navOpen,
+  setNavOpen,
+  setPageId,
+  children,
+}: {
+  plan: Plan;
+  page: Plan["pages"][number];
+  navOpen: boolean;
+  setNavOpen: (fn: (o: boolean) => boolean) => void;
+  setPageId: (id: string) => void;
+  children: React.ReactNode;
+}) {
+  const ed = useEditable();
+  const name = ed("app-name", plan.appName);
+  const banner = ed("banner", plan.ui.banner ?? "");
+  const title = ed(`title-${page.id}`, page.name);
+  const purpose = ed(`purpose-${page.id}`, page.purpose);
+  const initials = plan.appName
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
   const nav = (
     <nav className="space-y-0.5">
-      {plan.pages.map((p) => (
-        <button
-          key={p.id}
-          type="button"
-          onClick={() => {
-            setPageId(p.id);
-            setNavOpen(false);
-          }}
-          aria-current={p.id === page.id ? "page" : undefined}
-          className="a-nav-item"
-        >
-          <PageIcon name={p.icon} className="size-4 shrink-0" />
-          <span className="truncate">{p.name}</span>
-        </button>
-      ))}
+      {plan.pages.map((p) => {
+        const item = ed(`nav-${p.id}`, p.name);
+        if (item.hidden) return null;
+        return (
+          <button
+            key={p.id}
+            type="button"
+            {...item.attrs}
+            onClick={() => {
+              setPageId(p.id);
+              setNavOpen(() => false);
+            }}
+            aria-current={p.id === page.id ? "page" : undefined}
+            className="a-nav-item"
+            style={{ ...item.style, opacity: item.faded ? 0.4 : undefined }}
+          >
+            <PageIcon name={p.icon} className="size-4 shrink-0" />
+            <span className="truncate" data-edit-text="">
+              {item.text || p.name}
+            </span>
+          </button>
+        );
+      })}
     </nav>
   );
 
+  const brand = (className: string) =>
+    name.hidden ? null : (
+      <span {...name.attrs} className={className} style={name.style}>
+        {name.text || plan.appName}
+      </span>
+    );
+
   return (
-    <div className="arch-app" data-theme={theme.id} style={style}>
-      <style>{CSS}</style>
+    <>
       <aside className="a-sidebar hidden md:flex">
         <div className="flex items-center gap-2.5 px-2 pb-5">
           <span className="a-logo">{initials}</span>
-          <span className="a-heading truncate text-[15px] font-semibold">{plan.appName}</span>
+          {brand("a-heading truncate text-[15px] font-semibold")}
         </div>
         {nav}
         <p className="a-muted mt-auto px-2 text-[11px]">Built with Architect</p>
@@ -107,7 +296,7 @@ export function PreviewApp({ plan, initialPage, embedded }: { plan: Plan; initia
         <div className="a-topbar flex md:hidden">
           <span className="flex items-center gap-2">
             <span className="a-logo">{initials}</span>
-            <span className="a-heading text-sm font-semibold">{plan.appName}</span>
+            {brand("a-heading text-sm font-semibold")}
           </span>
           <button type="button" className="a-icon-btn" onClick={() => setNavOpen((o) => !o)} aria-label="Menu">
             {navOpen ? <X className="size-4" /> : <Menu className="size-4" />}
@@ -115,16 +304,53 @@ export function PreviewApp({ plan, initialPage, embedded }: { plan: Plan; initia
         </div>
         {navOpen && <div className="a-mobile-nav md:hidden">{nav}</div>}
 
-        {plan.ui.banner && <div className="a-banner">{plan.ui.banner}</div>}
+        {plan.ui.banner && !banner.hidden && (
+          <div {...banner.attrs} className="a-banner" style={banner.style}>
+            {banner.text || plan.ui.banner}
+          </div>
+        )}
 
         <main className={plan.ui.compact ? "px-4 py-4 md:px-6" : "px-4 py-5 md:px-8 md:py-7"}>
           <header className="mb-5">
-            <h1 className="a-heading text-2xl font-semibold md:text-[28px]">{page.name}</h1>
-            <p className="a-muted mt-1 text-sm">{page.purpose}</p>
+            {!title.hidden && (
+              <h1 {...title.attrs} className="a-heading w-fit max-w-full text-2xl font-semibold md:text-[28px]" style={{ ...title.style, opacity: title.faded ? 0.4 : undefined }}>
+                {title.text || page.name}
+              </h1>
+            )}
+            {!purpose.hidden && (
+              <p {...purpose.attrs} className="a-muted mt-1 w-fit max-w-full text-sm" style={{ ...purpose.style, opacity: purpose.faded ? 0.4 : undefined }}>
+                {purpose.text || page.purpose}
+              </p>
+            )}
           </header>
-          <PageBody key={page.id} plan={plan} page={page} collection={collection} agent={agent} />
+          {children}
         </main>
       </div>
+    </>
+  );
+}
+
+/** The generated app's own error boundary: what a visitor would see when a page crashes. */
+function CrashState({ issue }: { issue: Issue }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="a-card mx-auto max-w-lg px-6 py-8 text-center">
+      <span className="a-crash-icon">
+        <AlertTriangle className="size-5" />
+      </span>
+      <h2 className="a-heading mt-4 text-lg font-semibold">Something went wrong on this page</h2>
+      <p className="a-muted mx-auto mt-1 max-w-sm text-sm">The page stopped while loading its data. Everything else in the app still works.</p>
+      <button type="button" className="a-btn a-btn-ghost mt-5" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        Details
+        <ChevronDown className="size-3.5" style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform .15s" }} />
+      </button>
+      {open && (
+        <pre className="a-sunken mt-4 overflow-x-auto p-3 text-left font-mono text-[11.5px] leading-relaxed" style={{ color: "var(--a-danger)" }}>
+          {issue.title}
+          {"\n"}
+          <span className="a-muted">    {issue.stack[0]}</span>
+        </pre>
+      )}
     </div>
   );
 }
@@ -193,4 +419,11 @@ const CSS = `
 .arch-app .a-switch > span { position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:999px; background:#fff; transition:transform .15s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
 .arch-app .a-switch[aria-checked="true"] { background:var(--a-accent); }
 .arch-app .a-switch[aria-checked="true"] > span { transform:translateX(14px); }
+.arch-app .a-crash-icon { display:inline-flex; width:44px; height:44px; align-items:center; justify-content:center; border-radius:999px; background:color-mix(in oklab, var(--a-danger) 12%, transparent); color:var(--a-danger); }
+.arch-app[data-selecting] [data-edit] { cursor:pointer; }
+.arch-app .a-edit-hover, .arch-app .a-edit-picked { position:fixed; z-index:60; pointer-events:none; border-radius:6px; }
+.arch-app .a-edit-hover { outline:1.5px dashed #cf4318; background:rgba(207,67,24,.04); }
+.arch-app .a-edit-picked { outline:2px solid #cf4318; }
+.arch-app .a-edit-hover > span, .arch-app .a-edit-picked > span { position:absolute; left:-2px; top:-21px; height:17px; padding:0 6px; border-radius:4px; background:#cf4318; color:#fff; font:500 10.5px/17px var(--font-geist-mono), ui-monospace, monospace; letter-spacing:.02em; white-space:nowrap; }
+.arch-app [data-below] > span { top:auto; bottom:-21px; }
 `;

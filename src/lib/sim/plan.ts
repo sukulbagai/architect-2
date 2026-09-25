@@ -184,9 +184,14 @@ export function genericBlueprint(prompt: string, appName = "My App"): Blueprint 
 // Building a plan
 // ---------------------------------------------------------------------------------------------
 
-export function estimate(plan: Pick<Plan, "pages" | "agents" | "data">) {
+/** Sonnet builds cost 0.4× the credits of Opus. */
+export function modelRate(model?: string) {
+  return model === "claude-sonnet-5" ? 0.4 : 1;
+}
+
+export function estimate(plan: Pick<Plan, "pages" | "agents" | "data" | "model">) {
   const seconds = Math.round(10 + plan.agents.length * 2.4 + plan.data.length * 1.4 + plan.pages.length * 2.6 + 4);
-  const credits = Math.round((1.5 + plan.agents.length * 1.2 + plan.pages.length * 0.9 + plan.data.length * 0.4) * 10) / 10;
+  const credits = Math.round((1.5 + plan.agents.length * 1.2 + plan.pages.length * 0.9 + plan.data.length * 0.4) * modelRate(plan.model) * 10) / 10;
   return { seconds, credits };
 }
 
@@ -239,6 +244,7 @@ export function buildPlan(input: {
     integrations: [...integrations],
     notes,
     ui: { theme, search: true },
+    model,
     suggestions: bp.suggestions,
     testIssue: bp.testIssue,
     estimate: { seconds: 0, credits: 0 },

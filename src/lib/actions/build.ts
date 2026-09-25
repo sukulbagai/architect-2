@@ -4,14 +4,18 @@ import { revalidatePath } from "next/cache";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, type DB } from "@/db";
-import { messages, projects, usage, versions, type Message, type Project, type Version } from "@/db/schema";
+import { messages, projects, usage, versions, type Message, type Project, type ProjectSettings, type Version } from "@/db/schema";
 import { requireWorkspace } from "@/lib/session";
 import { rowId } from "@/lib/ids";
-import { applyPlanInstruction, buildPlan, matchBlueprint, planIdeas } from "@/lib/sim/plan";
-import { generateFiles } from "@/lib/sim/codegen";
+import { applyPlanInstruction, buildPlan, estimate, matchBlueprint, modelRate, planIdeas } from "@/lib/sim/plan";
+import { generateFiles, pagePath } from "@/lib/sim/codegen";
 import { buildScript, buildSummary, fileChanges } from "@/lib/sim/script";
-import { applyEdit } from "@/lib/sim/edit";
-import type { BuildScript, EditSummary, Plan } from "@/lib/sim/types";
+import { applyEdit, type EditResult } from "@/lib/sim/edit";
+import { breakIt, caughtText, fixIssue as fixPlanIssue, guardPage, maybeIssue, plantIssue, testChecks } from "@/lib/sim/issues";
+import { commitMessage } from "@/lib/sim/commit";
+import { applyVisualChange } from "@/lib/sim/visual-edit";
+import type { EditTarget, VisualChange } from "@/lib/sim/visual";
+import type { BuildScript, EditSummary, Issue, Plan, ProposalData, ProposalFile, TestReport } from "@/lib/sim/types";
 
 /* Everything here is simulated: plans, builds and edits come from local generators, so nothing
    calls a paid service. Results are saved exactly as a real build would save them. */
@@ -72,20 +76,24 @@ async function currentFiles(db: DB, project: Project) {
   return v?.files ?? {};
 }
 
-/** Simulated token accounting at Claude Opus 5 list prices ($5 / $25 per million tokens). */
-async function recordUsage(db: DB, workspaceId: string, projectId: string, steps: [string, number, number][]) {
+/**
+ * Simulated token accounting at Claude Opus 5 list prices ($5 / $25 per million tokens). Sonnet 5
+ * costs 0.4× as much, which is what the Pro model chip changes.
+ */
+async function recordUsage(db: DB, workspaceId: string, projectId: string, steps: [string, number, number][], model = "claude-opus-5") {
   if (!steps.length) return;
+  const rate = modelRate(model);
   await db.insert(usage).values(
     steps.map(([step, input, output]) => ({
       id: rowId(),
       workspaceId,
       projectId,
       step,
-      model: "claude-opus-5",
+      model,
       inputTokens: input,
       outputTokens: output,
       cacheReadTokens: Math.round(input * 0.6),
-      costUsd: ((input * 5 + output * 25) / 1_000_000).toFixed(5),
+      costUsd: (((input * 5 + output * 25) * rate) / 1_000_000).toFixed(5),
     })),
   );
 }
@@ -147,7 +155,7 @@ export async function answerQuestions(projectId: string, rawAnswers: Record<stri
   );
 
   await db.update(projects).set({ plan, updatedAt: new Date() }).where(eq(projects.id, projectId));
-  await recordUsage(db, ws.id, projectId, [["plan", 4200, 2600]]);
+  await recordUsage(db, ws.id, projectId, [["plan", 4200, 2600]], project.settings.model);
   revalidatePath("/", "layout");
   return { plan, messages: [user, reply], questionsId: questionsMsg?.id ?? null, answered: answers ?? ("skipped" as const) };
 }
@@ -192,7 +200,7 @@ export async function completeBuild(projectId: string, seconds: number) {
     ["ui", 9000, Math.round(tok)],
     ["build", 6000, 1200],
     ["test", 5000, 900],
-  ]);
+  ], project.settings.model);
   revalidatePath("/", "layout");
   return { version: toClientVersion(version), message };
 }
@@ -216,6 +224,20 @@ export async function stopBuild(projectId: string) {
 
 // ---------------------------------------------------------------------------------------------
 
+export type EditData = EditSummary & {
+  author: "architect" | "you";
+  previousVersionId: string | null;
+  focusPage?: string;
+  commit?: string;
+  /** The bug this change left behind, if any. The card offers Fix it while it's still open. */
+  issue?: Pick<Issue, "id" | "pageId" | "plain">;
+  /** What the testing agent checked, and anything it caught and fixed inside this change. */
+  test?: TestReport;
+  /** Set when the change came through diff review. */
+  review?: { accepted: number; total: number };
+  fixed?: boolean;
+};
+
 async function saveEditVersion(
   db: DB,
   project: Project,
@@ -223,6 +245,7 @@ async function saveEditVersion(
   summary: string,
   changes: string[],
   author: "architect" | "you",
+  extra: Partial<EditData> = {},
 ) {
   const before = await currentFiles(db, project);
   const files = generateFiles(plan, project.stack);
@@ -231,7 +254,7 @@ async function saveEditVersion(
     ? await db.select({ number: versions.number }).from(versions).where(eq(versions.id, project.currentVersionId)).limit(1)
     : [];
   const [version] = await db.insert(versions).values({ id: rowId(), projectId: project.id, number, summary, files, plan }).returning();
-  const edit: EditSummary & { author: string; previousVersionId: string | null } = {
+  const edit: EditData = {
     version: number,
     previousVersion: prev?.number ?? number - 1,
     previousVersionId: project.currentVersionId,
@@ -239,6 +262,7 @@ async function saveEditVersion(
     changes,
     files: fileChanges(before, files),
     author,
+    ...extra,
   };
   await db
     .update(projects)
@@ -247,10 +271,87 @@ async function saveEditVersion(
   return { version: toClientVersion(version), edit };
 }
 
-export async function sendMessage(projectId: string, rawText: string, mode: "plan" | "build") {
+const sendOptions = z
+  .object({ uiMode: z.enum(["simple", "pro"]).optional() })
+  .optional();
+
+/** The testing agent is on by default in Simple and off in Pro, where issues surface in the drawer. */
+function testing(settings: ProjectSettings, uiMode: "simple" | "pro") {
+  return settings.testAfterChanges ?? uiMode === "simple";
+}
+
+function checksFor(plan: Plan) {
+  return testChecks(plan).length;
+}
+
+const MENTION = /(^|\s)@([\w./[\]-]+)/g;
+const BREAK = /\b(?:and\s+)?break (?:it|this|the app)\b/i;
+
+/**
+ * A Build-mode change after the first build. Runs the edit engine, then the scripted bug and the
+ * testing agent, and either saves a version or (Pro, with review on) proposes it as a diff.
+ */
+async function buildModeChange(db: DB, project: Project, plan: Plan, text: string, uiMode: "simple" | "pro", seedNumber: number) {
+  const files = await currentFiles(db, project);
+  const mentions = [...text.matchAll(MENTION)].map((m) => m[2].replace(/[.,;:!?]+$/, "")).filter((p) => files[p] !== undefined);
+  const mentionedPage = plan.pages.find((p) => mentions.includes(pagePath(plan, p, project.stack)));
+  let clean = text.replace(MENTION, "$1").replace(/\s+/g, " ").trim();
+  const wantsBreak = BREAK.test(clean);
+  if (wantsBreak) clean = clean.replace(BREAK, "").trim();
+
+  let res: EditResult = wantsBreak && !clean ? { ok: true, plan, title: "", changes: [] } : applyEdit(plan, clean, { pageId: mentionedPage?.id });
+  if (!res.ok && !wantsBreak) return { mentions, res };
+  if (!res.ok) res = { ok: true, plan, title: "", changes: [] };
+
+  let next = res.plan;
+  let issue: Issue | undefined;
+  let test: TestReport | undefined;
+  const seed = `${project.id}:${seedNumber}:${clean}`;
+
+  if (wantsBreak) {
+    const broken = breakIt(next, res.focusPage ?? mentionedPage?.id, seed, project.stack);
+    if (broken) {
+      next = broken.plan;
+      issue = broken.issue;
+      res = {
+        ...res,
+        title: res.title ? `${res.title} and 1 more` : broken.title,
+        changes: [...res.changes, ...broken.changes],
+        focusPage: broken.focusPage,
+      };
+    }
+  } else {
+    const breaks = maybeIssue(next, res.trigger, seed);
+    if (testing(project.settings, uiMode)) {
+      test = { checks: checksFor(next) };
+      if (breaks) {
+        const planted = plantIssue(next, breaks, seed, project.stack);
+        next = guardPage(planted.plan, breaks.id);
+        test.caught = { plain: caughtText(planted.plan, planted.issue), fix: planted.issue.fix };
+      }
+    } else if (breaks) {
+      const planted = plantIssue(next, breaks, seed, project.stack);
+      next = planted.plan;
+      issue = planted.issue;
+    }
+  }
+
+  if (res.changes.length === 0) return { mentions, res: { ok: false as const, reply: "There's no page with data to switch over here.", examples: [] } };
+  return { mentions, res: { ...res, plan: next }, issue, test };
+}
+
+export async function sendMessage(projectId: string, rawText: string, mode: "plan" | "build", rawOpts?: { uiMode?: "simple" | "pro" }) {
   const text = z.string().trim().min(1).max(4000).parse(rawText);
+  const uiMode = sendOptions.parse(rawOpts)?.uiMode ?? "simple";
   const { db, ws, project } = await owned(projectId);
-  const user = await addMessage(db, projectId, { role: "user", kind: "chat", content: text, data: { mode, stage: project.stage } });
+  const model = project.settings.model;
+  const mentioned = uiMode === "pro" ? [...text.matchAll(MENTION)].map((m) => m[2]) : [];
+  const user = await addMessage(db, projectId, {
+    role: "user",
+    kind: "chat",
+    content: text,
+    data: { mode, stage: project.stage, ...(mentioned.length ? { mentions: mentioned } : {}) },
+  });
 
   if (project.stage === "build") {
     const reply = await addMessage(db, projectId, { role: "assistant", kind: "chat", content: "I'm still building. I'll pick this up as soon as the build finishes.", data: null }, 5);
@@ -263,7 +364,7 @@ export async function sendMessage(projectId: string, rawText: string, mode: "pla
     const res = applyPlanInstruction(plan, text);
     await db.update(projects).set({ plan: res.plan, updatedAt: new Date() }).where(eq(projects.id, projectId));
     const reply = await addMessage(db, projectId, { role: "assistant", kind: "chat", content: res.reply, data: { changes: res.changes } }, 5);
-    await recordUsage(db, ws.id, projectId, [["plan", 2400, 600]]);
+    await recordUsage(db, ws.id, projectId, [["plan", 2400, 600]], model);
     revalidatePath("/", "layout");
     return { messages: [user, reply], plan: res.plan };
   }
@@ -281,20 +382,68 @@ export async function sendMessage(projectId: string, rawText: string, mode: "pla
       },
       5,
     );
-    await recordUsage(db, ws.id, projectId, [["plan", 3100, 700]]);
+    await recordUsage(db, ws.id, projectId, [["plan", 3100, 700]], model);
     return { messages: [user, reply] };
   }
 
-  const res = applyEdit(plan, text);
+  const number = await nextVersionNumber(db, projectId);
+  const out = await buildModeChange(db, project, plan, text, uiMode, number);
+  const res = out.res;
   if (!res.ok) {
     const reply = await addMessage(db, projectId, { role: "assistant", kind: "chat", content: res.reply, data: { examples: res.examples } }, 5);
     return { messages: [user, reply] };
   }
-  const { version, edit } = await saveEditVersion(db, project, res.plan, res.title, res.changes, "architect");
-  const reply = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: res.title, data: { ...edit, focusPage: res.focusPage } }, 5);
-  await recordUsage(db, ws.id, projectId, [["build", 7000, 2200]]);
+  const issueRef = out.issue ? { id: out.issue.id, pageId: out.issue.pageId, plain: out.issue.plain } : undefined;
+  const commit = commitMessage(res.title, res.changes);
+  await recordUsage(db, ws.id, projectId, [["build", 7000, 2200], ...(out.test ? [["test", 3000, 500] as [string, number, number]] : [])], model);
+
+  // Pro with review on: propose the change as a diff. Nothing is saved until it's accepted.
+  if (uiMode === "pro" && project.settings.reviewChanges && project.currentVersionId) {
+    const before = await currentFiles(db, project);
+    const after = generateFiles(res.plan, project.stack);
+    const files: ProposalFile[] = fileChanges(before, after).map((f) => ({ ...f, before: before[f.path] ?? null, after: after[f.path] ?? null }));
+    const replaced = await supersedePending(db, projectId);
+    const data: ProposalData & { issue?: EditData["issue"]; test?: TestReport } = {
+      status: "pending",
+      baseVersionId: project.currentVersionId,
+      title: res.title,
+      changes: res.changes,
+      plan: res.plan,
+      commit,
+      files,
+      focusPage: res.focusPage,
+      ...(issueRef ? { issue: issueRef } : {}),
+      ...(out.test ? { test: out.test } : {}),
+    };
+    const proposal = await addMessage(db, projectId, { role: "assistant", kind: "proposal", content: res.title, data }, 5);
+    return { messages: [user, proposal], replaced };
+  }
+
+  const { version, edit } = await saveEditVersion(db, project, res.plan, res.title, res.changes, "architect", {
+    commit,
+    focusPage: res.focusPage,
+    ...(issueRef ? { issue: issueRef } : {}),
+    ...(out.test ? { test: out.test } : {}),
+  });
+  const reply = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: res.title, data: edit }, 5);
   revalidatePath("/", "layout");
   return { messages: [user, reply], plan: res.plan, version };
+}
+
+/** A newer proposal replaces any that are still waiting, so there's only ever one to review. */
+async function supersedePending(db: DB, projectId: string) {
+  const open = await db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.projectId, projectId), eq(messages.kind, "proposal")));
+  const pending = open.filter((m) => (m.data as ProposalData | null)?.status === "pending");
+  const out: ClientMessage[] = [];
+  for (const m of pending) {
+    const data = { ...(m.data as ProposalData), status: "discarded" as const, superseded: true };
+    await db.update(messages).set({ data }).where(eq(messages.id, m.id));
+    out.push(toClientMessage({ ...m, data }));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -319,7 +468,7 @@ export async function applyPlan(projectId: string, plan: Plan) {
   if (changes.length === 0) changes.push("Updated descriptions from the plan");
   const { version, edit } = await saveEditVersion(db, project, plan, "Applied plan changes", changes, "you");
   const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: "Applied plan changes", data: edit });
-  await recordUsage(db, ws.id, projectId, [["build", 6000, 1800]]);
+  await recordUsage(db, ws.id, projectId, [["build", 6000, 1800]], project.settings.model);
   revalidatePath("/", "layout");
   return { version, message, plan };
 }
@@ -361,4 +510,173 @@ export async function restoreVersion(projectId: string, versionId: string) {
   });
   revalidatePath("/", "layout");
   return { version: toClientVersion(version), message, plan: target.plan as Plan };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Iterate: review, fixes, visual edits, testing, settings
+
+async function proposalMessage(db: DB, projectId: string, messageId: string) {
+  const [m] = await db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.id, messageId), eq(messages.projectId, projectId), eq(messages.kind, "proposal")))
+    .limit(1);
+  if (!m) throw new Error("Proposal not found");
+  return { row: m, data: m.data as ProposalData & { issue?: EditData["issue"]; test?: TestReport } };
+}
+
+export async function acceptProposal(projectId: string, messageId: string, rawPaths: string[], rawCommit: string) {
+  const acceptedPaths = z.array(z.string().max(300)).max(500).parse(rawPaths);
+  const commit = z.string().trim().min(1).max(200).parse(rawCommit);
+  const { db, ws, project } = await owned(projectId);
+  const { row, data } = await proposalMessage(db, projectId, messageId);
+  if (data.status !== "pending") return { ok: false as const, reason: "closed" as const };
+  if (project.currentVersionId !== data.baseVersionId) {
+    return {
+      ok: false as const,
+      reason: "stale" as const,
+      error: "The app changed since this was proposed. Ask again and I'll redo it against the latest version.",
+    };
+  }
+  const accepted = new Set(acceptedPaths.filter((p) => data.files.some((f) => f.path === p)));
+  if (accepted.size === 0) return { ok: false as const, reason: "empty" as const, error: "Pick at least one file, or discard the change." };
+
+  // Rejected files stay exactly as they were: pinned to their base content (a rejected new file
+  // stays out, a rejected deletion comes back). Files are still generated from the plan.
+  const rejected = data.files.filter((f) => !accepted.has(f.path));
+  let plan = data.plan;
+  if (rejected.length) {
+    const overrides = { ...(plan.fileOverrides ?? {}) };
+    for (const f of rejected) overrides[f.path] = f.before;
+    plan = { ...plan, fileOverrides: overrides };
+  }
+  const total = data.files.length;
+  const changes = rejected.length
+    ? [...data.changes, `Kept ${rejected.length === 1 ? rejected[0].path : `${rejected.length} files`} as ${rejected.length === 1 ? "it was" : "they were"}`]
+    : data.changes;
+  const { version, edit } = await saveEditVersion(db, project, plan, commit, changes, "you", {
+    commit,
+    focusPage: data.focusPage,
+    review: { accepted: accepted.size, total },
+    ...(data.issue && plan.issues?.some((i) => i.id === data.issue!.id) ? { issue: data.issue } : {}),
+    ...(data.test ? { test: data.test } : {}),
+  });
+  const closed = { ...data, status: rejected.length ? ("partial" as const) : ("accepted" as const), accepted: accepted.size, version: edit.version };
+  await db.update(messages).set({ data: closed }).where(eq(messages.id, row.id));
+  const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: commit, data: edit });
+  await recordUsage(db, ws.id, projectId, [["review", 1200, 200]], project.settings.model);
+  revalidatePath("/", "layout");
+  return { ok: true as const, version, message, proposal: toClientMessage({ ...row, data: closed }), plan };
+}
+
+export async function discardProposal(projectId: string, messageId: string) {
+  const { db } = await owned(projectId);
+  const { row, data } = await proposalMessage(db, projectId, messageId);
+  if (data.status !== "pending") return { proposal: toClientMessage(row), message: null };
+  const closed = { ...data, status: "discarded" as const };
+  await db.update(messages).set({ data: closed }).where(eq(messages.id, row.id));
+  const message = await addMessage(db, projectId, { role: "system", kind: "event", content: "Change discarded. The app is unchanged.", data: null });
+  return { proposal: toClientMessage({ ...row, data: closed }), message };
+}
+
+const settingsPatch = z.object({
+  reviewChanges: z.boolean().optional(),
+  testAfterChanges: z.boolean().optional(),
+  model: z.enum(["claude-opus-5", "claude-sonnet-5"]).optional(),
+});
+
+/** A general project-settings setter: review, testing and the build model today. */
+export async function setProjectSettings(projectId: string, rawPatch: Partial<ProjectSettings>) {
+  const patch = settingsPatch.parse(rawPatch);
+  const { db, project } = await owned(projectId);
+  const settings: ProjectSettings = { ...project.settings, ...patch };
+  let plan = project.plan as Plan | null;
+  if (patch.model && plan) {
+    plan = { ...plan, model: patch.model };
+    plan.estimate = estimate(plan);
+  }
+  await db.update(projects).set({ settings, ...(plan ? { plan } : {}), updatedAt: new Date() }).where(eq(projects.id, projectId));
+  return { settings, plan };
+}
+
+export async function fixIssue(projectId: string, issueId: string) {
+  z.string().min(1).max(80).parse(issueId);
+  const { db, ws, project } = await owned(projectId);
+  const fixed = fixPlanIssue(planOf(project), issueId);
+  if (!fixed) return { ok: false as const, error: "That problem is already fixed." };
+  const { plan, issue } = fixed;
+  const title = `Fixed: ${issue.plain.replace(/\.$/, "")}`;
+  const { version, edit } = await saveEditVersion(db, project, plan, title, [issue.fix], "architect", {
+    commit: commitMessage(title, [issue.fix], { type: "fix", scope: issue.pageId }),
+    focusPage: issue.pageId,
+    fixed: true,
+  });
+  const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: title, data: edit });
+  await recordUsage(db, ws.id, projectId, [["fix", 5200, 900]], project.settings.model);
+  revalidatePath("/", "layout");
+  return { ok: true as const, version, message, plan, focusPage: issue.pageId };
+}
+
+const targetSchema = z.object({
+  editId: z.string().min(1).max(120),
+  kind: z.string().max(40).optional(),
+  pageId: z.string().max(80).optional(),
+  text: z.string().max(400).optional(),
+});
+const changeSchema = z.object({
+  text: z.string().max(400).optional(),
+  tone: z.enum(["accent", "muted"]).nullable().optional(),
+  size: z.enum(["s", "m", "l"]).nullable().optional(),
+  prompt: z.string().max(1000).optional(),
+});
+
+export async function applyVisualEdit(projectId: string, rawTarget: EditTarget, rawChange: VisualChange) {
+  const target = targetSchema.parse(rawTarget);
+  const change = changeSchema.parse(rawChange);
+  const { db, ws, project } = await owned(projectId);
+  if (project.stage !== "ready") return { ok: false as const, error: "Build the app first, then point at what to change." };
+  const res = applyVisualChange(planOf(project), target, change);
+  if (!res.ok) return { ok: false as const, error: res.reply };
+  const { version, edit } = await saveEditVersion(db, project, res.plan, res.title, res.changes, "you", {
+    commit: commitMessage(res.title, res.changes),
+    focusPage: res.focusPage,
+  });
+  const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: res.title, data: edit });
+  await recordUsage(db, ws.id, projectId, [["build", 2600, 700]], project.settings.model);
+  revalidatePath("/", "layout");
+  return { ok: true as const, version, message, plan: res.plan, focusPage: res.focusPage };
+}
+
+/**
+ * /test: the testing agent opens the app and clicks through it once. If a page is broken it fixes
+ * it (a new version); otherwise it reports what it checked.
+ */
+export async function runTests(projectId: string) {
+  const { db, ws, project } = await owned(projectId);
+  if (project.stage !== "ready") return { ok: false as const, error: "There's nothing to test until the app is built." };
+  const plan = planOf(project);
+  const checks = checksFor(plan);
+  await recordUsage(db, ws.id, projectId, [["test", 4200, 700]], project.settings.model);
+  const open = plan.issues?.[0];
+  if (open) {
+    const fixed = fixPlanIssue(plan, open.id)!;
+    const title = `Testing agent fixed the ${plan.pages.find((p) => p.id === open.pageId)?.name ?? "broken"} page`;
+    const { version, edit } = await saveEditVersion(db, project, fixed.plan, title, [open.fix], "architect", {
+      commit: commitMessage(title, [open.fix], { type: "fix", scope: open.pageId }),
+      focusPage: open.pageId,
+      test: { checks },
+      fixed: true,
+    });
+    const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: title, data: edit });
+    revalidatePath("/", "layout");
+    return { ok: true as const, version, message, plan: fixed.plan, focusPage: open.pageId };
+  }
+  const results = testChecks(plan);
+  const message = await addMessage(db, projectId, {
+    role: "assistant",
+    kind: "test",
+    content: `${checks} checks passed`,
+    data: { checks, pages: plan.pages.length, results },
+  });
+  return { ok: true as const, message };
 }

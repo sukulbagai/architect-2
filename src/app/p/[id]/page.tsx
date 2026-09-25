@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { messages, projects, versions, type Message, type Project } from "@/db/schema";
 import { requireWorkspace } from "@/lib/session";
 import { Workspace } from "@/components/workspace/workspace";
+import { CommandProvider } from "@/components/command/command-provider";
 import type { Plan } from "@/lib/sim/types";
 
 /**
@@ -52,23 +53,27 @@ export default async function ProjectPage({ params }: PageProps<"/p/[id]">) {
   const { freshMessageId, autoBuild } = arrival(thread, project, history.length);
 
   return (
-    <Workspace
-      mode={ws.mode}
-      project={{
-        id: project.id,
-        name: project.name,
-        status: project.status,
-        stage: project.stage,
-        stack: project.stack,
-        settings: project.settings,
-        updatedAt: project.updatedAt,
-      }}
-      plan={(project.plan as Plan | null) ?? null}
-      messages={thread.map((m) => ({ id: m.id, role: m.role, kind: m.kind, content: m.content, data: m.data, createdAt: m.createdAt }))}
-      versions={history.map((v) => ({ id: v.id, number: v.number, summary: v.summary, files: v.files, createdAt: v.createdAt, plan: (v.plan as Plan | null) ?? null }))}
-      currentVersionId={project.currentVersionId}
-      freshMessageId={freshMessageId}
-      autoBuild={autoBuild}
-    />
+    <CommandProvider mode={ws.mode}>
+      <Workspace
+        mode={ws.mode}
+        user={ws.name}
+        project={{
+          id: project.id,
+          name: project.name,
+          slug: project.slug,
+          status: project.status,
+          stage: project.stage,
+          stack: project.stack,
+          settings: project.settings,
+          updatedAt: project.updatedAt,
+        }}
+        plan={(project.plan as Plan | null) ?? null}
+        messages={thread.map((m) => ({ id: m.id, role: m.role, kind: m.kind, content: m.content, data: m.data, createdAt: m.createdAt }))}
+        versions={history.map((v) => ({ id: v.id, number: v.number, summary: v.summary, files: v.files, createdAt: v.createdAt, plan: (v.plan as Plan | null) ?? null }))}
+        currentVersionId={project.currentVersionId}
+        freshMessageId={freshMessageId}
+        autoBuild={autoBuild}
+      />
+    </CommandProvider>
   );
 }

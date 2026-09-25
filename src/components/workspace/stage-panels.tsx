@@ -12,6 +12,7 @@ import { deleteProject, renameProject } from "@/lib/actions/projects";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { EmptyState } from "@/components/common/empty-state";
 import { ProjectThumb } from "@/components/common/project-thumb";
 import {
@@ -352,6 +353,29 @@ export function SettingsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) 
         <p className="mt-4 text-xs text-muted-foreground">Environment variables, the custom domain and GitHub settings arrive with the Ship and GitHub milestones.</p>
       </section>
 
+      <section className="rounded-xl border border-border bg-card p-5 shadow-card">
+        <h3 className="text-sm font-semibold">Changes</h3>
+        <p className="mt-1 text-sm text-muted-foreground">How Architect applies what you ask for in Build mode.</p>
+        <div className="mt-4 divide-y divide-border border-t border-border">
+          <SettingRow
+            id="ps-test"
+            title="Test after each change"
+            body="A testing agent checks the app in a browser and fixes what it finds before you see it. Adds a few seconds."
+            checked={ws.testAfterChanges}
+            onChange={(v) => void ws.updateSettings({ testAfterChanges: v })}
+          />
+          {isPro && (
+            <SettingRow
+              id="ps-review"
+              title="Review each change as a diff"
+              body="Changes wait in a Review tab. Accept all, some or none of the files, with a commit message."
+              checked={!!ws.settings.reviewChanges}
+              onChange={(v) => void ws.updateSettings({ reviewChanges: v })}
+            />
+          )}
+        </div>
+      </section>
+
       <section className="rounded-xl border border-destructive/30 bg-card p-5 shadow-card">
         <h3 className="text-sm font-semibold">Delete this project</h3>
         <p className="mt-1 text-sm text-muted-foreground">Removes the project, its chat, versions and deployments.</p>
@@ -384,6 +408,20 @@ export function SettingsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) 
           </AlertDialogContent>
         </AlertDialog>
       </section>
+    </div>
+  );
+}
+
+function SettingRow({ id, title, body, checked, onChange }: { id: string; title: string; body: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-3.5">
+      <div className="min-w-0">
+        <Label htmlFor={id} className="text-sm font-medium">
+          {title}
+        </Label>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{body}</p>
+      </div>
+      <Switch id={id} checked={checked} onCheckedChange={onChange} className="mt-0.5" />
     </div>
   );
 }
