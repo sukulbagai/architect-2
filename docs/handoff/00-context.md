@@ -111,7 +111,7 @@ pnpm typecheck && pnpm lint && pnpm build
 - **Local database.** Without `DATABASE_URL` the app uses PGlite in `.data/pglite` (gitignored) and migrates it on first connection. To reset local data, stop the dev server and delete `.data/pglite`. Ask the user before deleting anything outside the scratch area.
 - **Schema changes.** Edit `src/db/schema.ts`, then run `pnpm db:generate --name <what>` to create `drizzle/000N_<what>.sql`. **Restart the dev server afterwards.** The PGlite client is cached on `globalThis` and only migrates when it first connects.
 - **Production.** `pnpm build` runs `scripts/migrate.ts`, which migrates Neon when `DATABASE_URL` is set, then `next build`. In production without `DATABASE_URL` the app throws a clear error, unless `ALLOW_EMBEDDED_DB` is set.
-- **New routes.** After adding one, run `npx next typegen` so the global `PageProps<"/route">` / `LayoutProps<…>` types know about it.
+- **New routes.** After adding one, run `npx next typegen` so the global `PageProps<"/route">` / `LayoutProps<…>` types know about it. `pnpm typecheck` runs `next typegen` first, because those types live in the gitignored `.next/` and a fresh clone has none.
 
 ---
 

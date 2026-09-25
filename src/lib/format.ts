@@ -42,7 +42,10 @@ export function formatBytes(bytes: number) {
 export function nameFromPrompt(prompt: string) {
   const lead =
     /^(please\s+|i\s+(want|need|would like)\s+(to\s+)?|let'?s\s+|can you\s+|help me\s+)?((build|make|create|design|generate|set up|spin up)\s+)?(me\s+)?(an?\s+|the\s+|my\s+|our\s+)?/i;
-  const cleaned = prompt.trim().replace(lead, "").replace(/^(simple|small|quick|basic)\s+/i, "");
+  // "An app that turns meeting notes into…" is named for what it works on, not "App".
+  const generic =
+    /^(app|application|tool|platform|system|dashboard|website|site|bot|assistant|agent|portal)\s+(that|which|to|for)\s+((helps?|lets?)\s+(me|us|you|people|teams?)\s+)?\w+\s+/i;
+  const cleaned = prompt.trim().replace(lead, "").replace(/^(simple|small|quick|basic)\s+/i, "").replace(generic, "").replace(/^(an?|the|my|our)\s+/i, "");
   const stop = new Set([
     "where", "that", "which", "who", "for", "with", "to", "so", "and", "from", "using",
     "in", "on", "by", "of", "which", "when", "it", "into",
