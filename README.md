@@ -41,6 +41,9 @@ the database, which runs on free tiers.
 - **Issues** (`issues.ts`): about one in three edits that add a page or a field leave a real bug in the generated code (typing "break it" always does). The preview shows the page's crash state, Fix it saves a version whose diff adds the guard, and the testing agent can catch it inside the change instead.
 - **Review** (Pro): with diff review on, a change waits as a proposal with per-file diffs and a conventional-commit message (`commit.ts`) until you accept some or all of it.
 - **Visual edits** (`visual.ts`, `visual-edit.ts`): click an element in the preview, change its text, emphasis or size; text lands on real plan fields and styles become CSS in `theme.css`.
+- **Agents** (`agents.ts`, `frameworks.ts`, `agent-code.ts`): each agent's framework, tools, knowledge, memory, guardrails and handoffs are saved and generated as real source for Lyzr, LangGraph, CrewAI, OpenAI Agents SDK, Claude Agent SDK, Google ADK, Mastra or GitAgent (the SDKs only appear in the generated project). A run replies from the agent's scripted samples (the one that best matches the question) with a trace built from its config: tool calls, retrieval, tokens, guardrails, or a handoff when a request mentions a refund or something legal.
+- **Standalone agents**: `/agents/new` drafts one from a sentence. Its Deploy tab publishes a real endpoint, `POST /api/v1/agents/<id>/run`, checked against a hashed API key, plus an embeddable chat widget at `/embed/agent/<id>`. Replies are scripted, so calling it costs nothing.
+- **Connections**: the Integrations page plays a simulated OAuth consent (Allow or Deny) and adds MCP servers and HTTP tools by URL. Nothing contacts the service and no token is stored; connected tools become switches in the agent editor.
 - **Terminal** (`terminal.ts`): a scripted shell over the current version's real files (`ls`, `cat`, `tree`, `git log`, `npm test`, `npm run build`…).
 - **Preview** (`src/components/preview`): the generated app, rendered from its plan inside a sandboxed frame, with working tables, drawers, chat, run pipelines and settings.
 
@@ -48,6 +51,7 @@ the database, which runs on free tiers.
 
 - Next.js 16 (App Router, Turbopack) and TypeScript
 - Tailwind CSS v4, shadcn/ui on Radix, lucide icons, next-themes
+- React Flow (`@xyflow/react`) for the agent flow graph
 - Drizzle ORM over Neon (production) or PGlite (local)
 - CodeMirror 6 for the code editor, jsdiff for version diffs
 
@@ -60,9 +64,12 @@ the database, which runs on free tiers.
 | `src/app/(app)` | Signed-in pages that share the left rail: Home, Projects, Agents, Explore, Integrations, Usage, Settings |
 | `src/app/p/[id]` | The project Workspace |
 | `src/app/p/[id]/preview` | The generated app, rendered from a version's plan |
+| `src/app/(app)/agents` | Agents library, the New agent wizard and each standalone agent (Configure, Test, Deploy, Usage) |
+| `src/app/api/agents`, `src/app/api/v1/agents` | Agent runs: the test console's (signed in) and the public API (API key) |
+| `src/app/embed/agent/[id]` | The public chat widget |
 | `src/lib/sim` | The simulation engine (see above) |
 | `src/db` | Schema and the Neon/PGlite client |
-| `src/lib/actions` | Server actions (auth, workspace, projects, build) |
+| `src/lib/actions` | Server actions (auth, workspace, projects, build, agents, connections, the widget) |
 | `src/proxy.ts` | Redirects signed-out visitors away from app routes |
 
 ### Identity without sign-in
@@ -81,7 +88,7 @@ Light/dark/system is independent of Simple/Pro. Design tokens live in `src/app/g
 | 1. Foundation | Design system, app shell, database, sign-in, onboarding, Home, Projects | Done |
 | 2. Plan and build | Simulated planning, streamed builds, live preview, code tab, versions, the Consultant | Done |
 | 3. Iterate | Diff review, Fix it, visual edits, testing agent, terminal/logs/problems drawer, ⌘K, / commands and @ mentions | Done |
-| 4. Agents | Agents panel, frameworks, test console, runtime | Next |
-| 5. GitHub | Simulated connect, import, push, branches | |
+| 4. Agents | Agent editor, code in 8 frameworks, flow graph, test console with traces, standalone agents (API + widget), integrations and MCP, knowledge | Done |
+| 5. GitHub | Simulated connect, import, push, branches | Next |
 | 6. Ship | Deploys, live URLs, rollback, env vars, usage | |
 | 7. Polish | Remaining flows, states, mobile, demo project | |

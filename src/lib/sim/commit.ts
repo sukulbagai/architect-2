@@ -21,6 +21,7 @@ const IMPERATIVE: Record<string, string> = {
   rewrote: "rewrite",
   set: "set",
   switched: "switch",
+  turned: "turn",
   updated: "update",
 };
 

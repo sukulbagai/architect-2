@@ -12,6 +12,8 @@ import {
   fixIssue as fixIssueAction,
   restoreVersion,
   runTests as runTestsAction,
+  saveAgent as saveAgentAction,
+  saveAgentTests as saveAgentTestsAction,
   saveFile,
   savePlan,
   sendMessage,
@@ -23,7 +25,8 @@ import {
 } from "@/lib/actions/build";
 import type { Mode, ProjectSettings, ProjectStage, ProjectStatus } from "@/db/schema";
 import type { EditTarget, VisualChange } from "@/lib/sim/visual";
-import type { BuildScript, BuildStepId, Plan, ProposalData } from "@/lib/sim/types";
+import type { ConnectionView } from "@/lib/integrations";
+import type { AgentTest, BuildScript, BuildStepId, Plan, PlanAgent, ProposalData } from "@/lib/sim/types";
 
 export type TabId = "preview" | "review" | "plan" | "agents" | "data" | "code" | "versions" | "settings";
 
@@ -89,6 +92,10 @@ export function useWorkspace(
     currentVersionId: string | null;
     freshMessageId: string | null;
     autoBuild: boolean;
+    /** From the URL: /p/<id>?tab=agents&agent=<agentId> opens straight onto an agent. */
+    initialTab?: TabId | null;
+    initialAgentId?: string | null;
+    connections: ConnectionView[];
   },
   uiMode: Mode,
   /** Called when someone asks to see a stage tab, so the phone layout can switch to the App view. */
@@ -107,7 +114,11 @@ export function useWorkspace(
   const [hiddenId, setHiddenId] = useState<string | null>(fresh ?? null);
   const [planReveal, setPlanReveal] = useState(PLAN_SECTIONS);
   const [planDirty, setPlanDirty] = useState(false);
-  const [tab, setTabState] = useState<TabId>(init.currentVersionId ? "preview" : init.plan ? "plan" : "preview");
+  const [tab, setTabState] = useState<TabId>(init.initialTab ?? (init.currentVersionId ? "preview" : init.plan ? "plan" : "preview"));
+  const [agentId, setAgentId] = useState<string | null>(init.initialAgentId ?? null);
+  /** Unsaved edits per agent, kept here so they survive switching tabs. */
+  const [agentDrafts, setAgentDrafts] = useState<Record<string, PlanAgent>>({});
+  const [connections, setConnections] = useState<ConnectionView[]>(init.connections);
   const [previewPage, setPreviewPage] = useState<string | null>(null);
   const [previewVersionId, setPreviewVersionId] = useState<string | null>(null);
   const [answered, setAnswered] = useState<Record<string, unknown>>({});
@@ -560,6 +571,65 @@ export function useWorkspace(
     await restore(previousVersion.id);
   }, [previousVersion, restore]);
 
+  // ---------------------------------------------------------------------------------------------
+  // Agents
+
+  const openAgent = useCallback(
+    (id: string) => {
+      setAgentId(id);
+      setTab("agents");
+    },
+    [setTab],
+  );
+
+  const setAgentDraft = useCallback((id: string, draft: PlanAgent | null) => {
+    setAgentDrafts((d) => {
+      const next = { ...d };
+      if (draft) next[id] = draft;
+      else delete next[id];
+      return next;
+    });
+  }, []);
+
+  const addConnection = useCallback((c: ConnectionView) => setConnections((list) => [c, ...list.filter((x) => x.id !== c.id)]), []);
+
+  /** Saves one agent. After the first build that's a new version; before it, just the plan. */
+  const saveAgent = useCallback(
+    async (agent: PlanAgent) => {
+      try {
+        const res = await saveAgentAction(project.id, agent);
+        if (!res.ok) {
+          toast(res.error);
+          return false;
+        }
+        if (res.version && res.message) {
+          land({ version: res.version, message: res.message, plan: res.plan });
+          toast.success(`Saved ${agent.name} as v${res.version.number}`, { description: res.changes.length === 1 ? res.changes[0] : `${res.changes.length} changes` });
+        } else {
+          setPlan(res.plan);
+          toast.success(`Saved ${agent.name} to the plan`, { description: "It's built into the app when you click Build this." });
+        }
+        setAgentDraft(agent.id, null);
+        return true;
+      } catch {
+        toast.error("Couldn't save the agent", { description: "Please try again." });
+        return false;
+      }
+    },
+    [land, project.id, setAgentDraft],
+  );
+
+  /** Test cases save straight away (no version); a failure throws so the console can say so. */
+  const saveAgentTests = useCallback(
+    async (id: string, tests: AgentTest[]) => {
+      const res = await saveAgentTestsAction(project.id, id, tests);
+      if (!res.ok) throw new Error("Agent not found");
+      setPlan((p) => (p ? { ...p, agents: p.agents.map((a) => (a.id === id ? { ...a, tests } : a)) } : p));
+      setAgentDrafts((d) => (d[id] ? { ...d, [id]: { ...d[id], tests } } : d));
+    },
+    [project.id],
+  );
+
   const saveCode = useCallback(
     async (path: string, content: string) => {
       const res = await saveFile(project.id, path, content);
@@ -575,6 +645,15 @@ export function useWorkspace(
   return {
     project,
     setProject,
+    agentId,
+    setAgentId,
+    openAgent,
+    agentDrafts,
+    setAgentDraft,
+    saveAgent,
+    saveAgentTests,
+    connections,
+    addConnection,
     settings,
     testAfterChanges,
     reviewing,

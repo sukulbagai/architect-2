@@ -14,8 +14,10 @@ import { applyEdit, type EditResult } from "@/lib/sim/edit";
 import { breakIt, caughtText, fixIssue as fixPlanIssue, guardPage, maybeIssue, plantIssue, testChecks } from "@/lib/sim/issues";
 import { commitMessage } from "@/lib/sim/commit";
 import { applyVisualChange } from "@/lib/sim/visual-edit";
+import { describeAgentChanges, toolIntegration } from "@/lib/sim/agents";
+import { agentInput, testsInput } from "@/lib/agent-store";
 import type { EditTarget, VisualChange } from "@/lib/sim/visual";
-import type { BuildScript, EditSummary, Issue, Plan, ProposalData, ProposalFile, TestReport } from "@/lib/sim/types";
+import type { AgentTest, BuildScript, EditSummary, Issue, Plan, PlanAgent, ProposalData, ProposalFile, TestReport } from "@/lib/sim/types";
 
 /* Everything here is simulated: plans, builds and edits come from local generators, so nothing
    calls a paid service. Results are saved exactly as a real build would save them. */
@@ -679,4 +681,64 @@ export async function runTests(projectId: string) {
     data: { checks, pages: plan.pages.length, results },
   });
   return { ok: true as const, message };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Agents: the editor in the Agents tab saves one agent at a time
+
+/**
+ * Saves one agent from the Agents tab. Before the first build it just updates the plan; after it,
+ * the agent's files are regenerated (in its framework) and the change lands as a version.
+ */
+export async function saveAgent(projectId: string, raw: PlanAgent) {
+  const input = agentInput.parse(raw);
+  const { db, ws, project } = await owned(projectId);
+  if (project.stage === "build") return { ok: false as const, error: "Wait for the build to finish, then save." };
+  const plan = planOf(project);
+  const before = plan.agents.find((a) => a.id === input.id);
+  if (!before) return { ok: false as const, error: "That agent isn't in the plan any more. Reload to see the latest." };
+
+  const next: PlanAgent = {
+    ...before,
+    ...input,
+    handoffs: (input.handoffs ?? []).filter((id) => id !== input.id && plan.agents.some((a) => a.id === id)),
+    // Test cases are saved on their own, straight from the console.
+    tests: before.tests,
+  };
+  const agents = plan.agents.map((a) => (a.id === input.id ? next : a));
+  const integrations = [...plan.integrations];
+  for (const t of next.tools) {
+    const i = toolIntegration(t);
+    if (i && !integrations.includes(i.name)) integrations.push(i.name);
+  }
+  const nextPlan: Plan = { ...plan, agents, integrations };
+  nextPlan.estimate = estimate(nextPlan);
+
+  const changes = describeAgentChanges(before, next, agents);
+  if (changes.length === 0) return { ok: false as const, error: "Nothing has changed since the last save." };
+
+  if (project.stage === "plan") {
+    await db.update(projects).set({ plan: nextPlan, updatedAt: new Date() }).where(eq(projects.id, projectId));
+    return { ok: true as const, plan: nextPlan, changes };
+  }
+
+  const title = `Updated ${next.name}${/agent$/i.test(next.name) ? "" : " agent"}`;
+  const { version, edit } = await saveEditVersion(db, project, nextPlan, title, changes, "you", {
+    commit: commitMessage(title, changes, { scope: "agents" }),
+  });
+  const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: title, data: edit });
+  await recordUsage(db, ws.id, projectId, [["agents", 2400, 900]], project.settings.model);
+  revalidatePath("/", "layout");
+  return { ok: true as const, plan: nextPlan, changes, version, message };
+}
+
+/** Test cases from the console. They're checks, not code, so they don't make a version. */
+export async function saveAgentTests(projectId: string, agentId: string, raw: AgentTest[]) {
+  const tests = testsInput.parse(raw);
+  const { db, project } = await owned(projectId);
+  const plan = planOf(project);
+  if (!plan.agents.some((a) => a.id === agentId)) return { ok: false as const };
+  const next: Plan = { ...plan, agents: plan.agents.map((a) => (a.id === agentId ? { ...a, tests } : a)) };
+  await db.update(projects).set({ plan: next }).where(eq(projects.id, projectId));
+  return { ok: true as const };
 }

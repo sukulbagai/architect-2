@@ -24,18 +24,33 @@ export type PlanCollection = {
   statusField?: string;
 };
 
+export type AgentMemory = { mode: "off" | "conversation" | "long-term"; window?: number };
+export type KnowledgeFile = { name: string; size: number; chunks: number };
+export type AgentTest = { id: string; input: string; expect: string };
+
 export type PlanAgent = {
   id: string;
   name: string;
   role: string;
+  /** A framework id from `frameworks.ts` ("lyzr", "langgraph"…). Older plans stored the label ("Lyzr"). */
   framework: string;
   model: string;
+  /** Built-ins ("Web search"), integration names ("Slack") and MCP servers ("mcp:DeepWiki"). */
   tools: string[];
   instructions: string;
   /** Scripted responses the preview plays back when the agent "runs". */
   samples: string[];
   /** A tool call the preview shows before the answer, for realism. */
   trace?: string;
+  memory?: AgentMemory;
+  /** Ids from `GUARDRAILS` in `agents.ts`. */
+  guardrails?: string[];
+  /** Agent ids this agent can hand work to. */
+  handoffs?: string[];
+  /** Names and sizes only: file contents never leave the browser. */
+  knowledge?: KnowledgeFile[];
+  /** Saved from the test console; `expect` is a phrase the reply should mention. */
+  tests?: AgentTest[];
 };
 
 export type PlanPage = {

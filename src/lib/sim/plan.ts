@@ -1,5 +1,6 @@
 import { BLUEPRINTS, getBlueprint, type Blueprint } from "./catalog";
 import { seededRandom } from "../seeded";
+import { DEFAULT_GUARDRAILS, DEFAULT_MEMORY, chunksFor } from "./agents";
 import type { AppTheme, Plan, PlanAgent, PlanCollection, PlanPage, PlanQuestion, Row } from "./types";
 import type { ProjectSettings } from "@/db/schema";
 
@@ -95,9 +96,12 @@ export function genericBlueprint(prompt: string, appName = "My App"): Blueprint 
     id: "assistant",
     name: `${entity} assistant`,
     role: `Answers questions about your ${plural.toLowerCase()} and drafts updates.`,
-    framework: "Lyzr",
+    framework: "lyzr",
     model: "claude-opus-5",
     tools: notify ? ["Gmail"] : [],
+    memory: DEFAULT_MEMORY,
+    guardrails: DEFAULT_GUARDRAILS,
+    handoffs: [],
     instructions: `You are the ${entity} assistant. Answer questions about ${plural.toLowerCase()} using the app's data, draft updates when asked, and say when you're unsure.`,
     samples: [
       `${first.title} is ${String(first.status).toLowerCase()}${first.due ? `, due ${new Date(String(first.due) + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}, with ${first.person}.${money ? ` It's for $${Number(first.amount).toLocaleString("en-US")}.` : ""} Want me to draft a short update for them?`,
@@ -109,9 +113,12 @@ export function genericBlueprint(prompt: string, appName = "My App"): Blueprint 
     id: "insights",
     name: "Insights",
     role: `Spots trends across your ${plural.toLowerCase()} and writes a weekly summary.`,
-    framework: "Lyzr",
+    framework: "lyzr",
     model: "claude-opus-5",
     tools: [],
+    memory: DEFAULT_MEMORY,
+    guardrails: DEFAULT_GUARDRAILS,
+    handoffs: [],
     instructions: `You are the Insights agent. Look across all ${plural.toLowerCase()}, find what changed this week and write a short, specific summary.`,
     samples: [
       `This week: ${rowsOut.length} ${plural.toLowerCase()} in total, ${rowsOut.filter((r) => r.status === statuses[statuses.length - 1]).length} finished.${money ? ` Outstanding: $${rowsOut.filter((r) => r.status !== "Paid").reduce((s, r) => s + Number(r.amount ?? 0), 0).toLocaleString("en-US")}.` : ""} ${statuses[2]} items are up by 2 since last week, mostly with ${PEOPLE[3]}.`,
@@ -189,9 +196,11 @@ export function modelRate(model?: string) {
   return model === "claude-sonnet-5" ? 0.4 : 1;
 }
 
+/** Build time and credits. Each agent's own model counts too: a Sonnet agent is cheaper to build and test. */
 export function estimate(plan: Pick<Plan, "pages" | "agents" | "data" | "model">) {
   const seconds = Math.round(10 + plan.agents.length * 2.4 + plan.data.length * 1.4 + plan.pages.length * 2.6 + 4);
-  const credits = Math.round((1.5 + plan.agents.length * 1.2 + plan.pages.length * 0.9 + plan.data.length * 0.4) * modelRate(plan.model) * 10) / 10;
+  const agents = plan.agents.reduce((sum, a) => sum + 1.2 * modelRate(a.model), 0);
+  const credits = Math.round((1.5 + agents + plan.pages.length * 0.9 + plan.data.length * 0.4) * modelRate(plan.model) * 10) / 10;
   return { seconds, credits };
 }
 
@@ -225,11 +234,25 @@ export function buildPlan(input: {
   }
 
   const model = settings?.model ?? "claude-opus-5";
-  const agents = structuredClone(bp.agents).map((a) => ({
-    ...a,
-    model,
-    tools: attachments.length && !a.tools.includes("Knowledge base") && a.id === bp.agents[0].id ? [...a.tools, "Knowledge base"] : a.tools,
-  }));
+  // Documents and sheets attached on Home become the first agent's knowledge (names and sizes only).
+  const knowledge = attachments.filter((f) => f.kind !== "image").map((f) => ({ name: f.name, size: f.size, chunks: chunksFor(f.size) }));
+  const agents: PlanAgent[] = structuredClone(bp.agents).map((a) => {
+    const first = a.id === bp.agents[0].id;
+    return {
+      ...a,
+      model,
+      tools: attachments.length && !a.tools.includes("Knowledge base") && first ? [...a.tools, "Knowledge base"] : a.tools,
+      ...(first && knowledge.length ? { knowledge: [...(a.knowledge ?? []), ...knowledge] } : {}),
+    };
+  });
+  // Standalone agents added from the composer's + menu join the plan with their own settings.
+  const extras = settings?.attachedAgents ?? [];
+  if (extras.length) notes.push(`Includes your ${extras.map((a) => a.name).join(" and ")} ${extras.length === 1 ? "agent" : "agents"}, with ${extras.length === 1 ? "its" : "their"} own tools and framework.`);
+  for (const extra of extras) {
+    let id = extra.id;
+    for (let n = 2; agents.some((a) => a.id === id); n++) id = `${extra.id}-${n}`;
+    agents.push({ ...structuredClone(extra), id, handoffs: [] });
+  }
   const theme = (settings?.themePreset as AppTheme | undefined) ?? bp.theme;
 
   const plan: Plan = {
@@ -316,9 +339,12 @@ export function newAgent(rawName: string): PlanAgent {
     id: slug(name),
     name,
     role: `Handles ${name.toLowerCase()} tasks you describe.`,
-    framework: "Lyzr",
+    framework: "lyzr",
     model: "claude-opus-5",
     tools: [],
+    memory: DEFAULT_MEMORY,
+    guardrails: DEFAULT_GUARDRAILS,
+    handoffs: [],
     instructions: `You are the ${name} agent. Do what's asked, be concise, and say when you're unsure.`,
     samples: [`Done. I handled the ${name.toLowerCase()} step and logged what I changed.`],
     trace: "Ran 1 step",

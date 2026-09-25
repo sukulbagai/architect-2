@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
@@ -5,9 +6,11 @@ import {
   jsonb,
   integer,
   numeric,
+  boolean,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import type { AgentMemory, AgentTest, KnowledgeFile, PlanAgent } from "@/lib/sim/types";
 
 export type Mode = "simple" | "pro";
 export type ProjectStatus = "draft" | "building" | "live" | "error";
@@ -27,6 +30,33 @@ export type ProjectSettings = {
   reviewChanges?: boolean;
   /** A testing agent checks the app after each change. Unset means on in Simple, off in Pro. */
   testAfterChanges?: boolean;
+  /** Standalone agents picked from the Home composer's + menu, snapshotted so the plan can include them. */
+  attachedAgents?: PlanAgent[];
+};
+
+/** Everything about a standalone agent that isn't a column: the same shape a plan agent has. */
+export type AgentConfig = {
+  memory?: AgentMemory;
+  guardrails?: string[];
+  handoffs?: string[];
+  tests?: AgentTest[];
+  samples?: string[];
+  trace?: string;
+  /** What the person typed in the New agent wizard. */
+  prompt?: string;
+};
+
+export type AgentWidget = { color: string; greeting: string; position: "bottom-right" | "bottom-left" };
+
+export type ConnectionKind = "oauth" | "mcp" | "http";
+export type ConnectionConfig = {
+  scopes?: string[];
+  url?: string;
+  tools?: string[];
+  /** A masked hint of an auth header ("Bearer ••••a91f"). The header itself is never stored. */
+  headerHint?: string;
+  /** The account the simulated consent screen showed. */
+  account?: string;
 };
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
@@ -124,11 +154,40 @@ export const agents = pgTable(
     model: text("model").notNull().default("claude-opus-5"),
     instructions: text("instructions").notNull().default(""),
     tools: jsonb("tools").$type<string[]>().notNull().default([]),
-    knowledge: jsonb("knowledge").$type<{ name: string; size: number }[]>().notNull().default([]),
+    knowledge: jsonb("knowledge").$type<KnowledgeFile[]>().notNull().default([]),
+    published: boolean("published").notNull().default(false),
+    /** sha256 of the API key; the key itself is shown once and never stored. */
+    apiKeyHash: text("api_key_hash"),
+    apiKeyPrefix: text("api_key_prefix"),
+    apiKeyCreatedAt: timestamp("api_key_created_at", { withTimezone: true }),
+    widget: jsonb("widget").$type<AgentWidget>(),
+    config: jsonb("config").$type<AgentConfig>().notNull().default({}),
+    /** Real calls to the public API and the widget (the Usage tab adds simulated history). */
+    runs: integer("runs").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [index("agents_workspace_idx").on(t.workspaceId)],
+);
+
+/** A simulated connection to an integration or an MCP server, shared by every agent in the workspace. */
+export const connections = pgTable(
+  "connections",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    integrationId: text("integration_id").notNull(),
+    kind: text("kind").$type<ConnectionKind>().notNull().default("oauth"),
+    label: text("label").notNull(),
+    config: jsonb("config").$type<ConnectionConfig>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("connections_workspace_idx").on(t.workspaceId, t.createdAt),
+    uniqueIndex("connections_oauth_idx").on(t.workspaceId, t.integrationId).where(sql`${t.kind} = 'oauth'`),
+  ],
 );
 
 export const deployments = pgTable(
@@ -186,4 +245,5 @@ export type Project = typeof projects.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Version = typeof versions.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
+export type Connection = typeof connections.$inferSelect;
 export type Deployment = typeof deployments.$inferSelect;

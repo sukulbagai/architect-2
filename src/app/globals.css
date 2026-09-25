@@ -319,6 +319,21 @@
   animation: caret-blink 1s step-end infinite;
 }
 
+@keyframes fill-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* A progress bar that fills once over --fill-ms (knowledge indexing, test runs). */
+@utility animate-fill {
+  transform-origin: left;
+  animation: fill-x var(--fill-ms, 1500ms) linear both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -360,4 +375,45 @@
   --code-type: #e7b24a;
   --code-tag: #ff9f7a;
   --code-attr: #b8b7ae;
+}
+
+/* The agent flow graph (@xyflow/react), drawn with Architect's tokens in both themes. */
+.architect-flow .react-flow,
+.architect-flow .react-flow.dark {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: var(--border-strong);
+  --xy-edge-label-background-color: var(--background);
+  --xy-edge-label-color: var(--brand-text);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--muted);
+  --xy-controls-button-color: var(--muted-foreground);
+  --xy-controls-button-color-hover: var(--foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-box-shadow: var(--shadow-card);
+  --xy-attribution-background-color: transparent;
+  font-family: var(--font-sans);
+}
+.architect-flow .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.architect-flow .react-flow__controls-button svg {
+  max-width: 11px;
+  max-height: 11px;
+}
+.architect-flow .react-flow__attribution a {
+  color: var(--subtle-foreground);
+  font-size: 9px;
+}
+.architect-flow .react-flow__node {
+  cursor: default;
+}
+.architect-flow .react-flow__node-agent {
+  cursor: pointer;
+}
+.architect-flow .react-flow__node:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 12px;
 }

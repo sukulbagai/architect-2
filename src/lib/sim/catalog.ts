@@ -29,10 +29,13 @@ const settingsPage: PlanPage = {
 
 function agent(a: Omit<PlanAgent, "framework" | "model" | "tools" | "instructions"> & Partial<PlanAgent>): PlanAgent {
   return {
-    framework: "Lyzr",
+    framework: "lyzr",
     model: "claude-opus-5",
     tools: [],
     instructions: `You are the ${a.name} agent. ${a.role} Be concise, cite your sources, and say when you're unsure.`,
+    memory: { mode: "conversation", window: 20 },
+    guardrails: /escalat/i.test(a.id) ? ["approve-external", "cite-sources", "human-handoff"] : ["approve-external", "cite-sources"],
+    handoffs: [],
     ...a,
   };
 }
@@ -62,6 +65,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "triage",
         name: "Triage",
+        handoffs: ["drafter", "escalation"],
         role: "Reads each new ticket, tags its topic and sets urgency.",
         tools: ["Gmail"],
         samples: [
@@ -73,6 +77,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "drafter",
         name: "Answer drafter",
+        handoffs: ["escalation"],
         role: "Writes a reply grounded in the help docs, with citations.",
         tools: ["Knowledge base"],
         samples: [
@@ -199,6 +204,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "parser",
         name: "Resume parser",
+        handoffs: ["scorer"],
         role: "Pulls experience, skills and education out of each resume.",
         tools: ["Knowledge base"],
         samples: ["Priya Nair: 6 years backend (Go, Postgres, Kafka), led the payments migration at Finch, BSc Computer Science. Gap: no Kubernetes."],
@@ -207,6 +213,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "scorer",
         name: "Scorer",
+        handoffs: ["scheduler"],
         role: "Scores each candidate 0–100 against the role and explains why.",
         samples: [
           "Top matches for Senior Backend Engineer:\n\n1. Priya Nair (91). Payments at scale, strong Postgres, has mentored juniors.\n2. Daniel Kim (84). Solid Go, lighter on distributed systems.\n3. Aisha Bello (79). Great system design; would need to ramp up on Go.\n\n9 others scored below 70.",
@@ -309,6 +316,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "researcher",
         name: "Researcher",
+        handoffs: ["enricher"],
         role: "Summarises what a company does and what's new.",
         tools: ["Web search"],
         samples: [
@@ -319,6 +327,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "enricher",
         name: "Enricher",
+        handoffs: ["writer"],
         role: "Finds the likely decision maker and their contact details.",
         tools: ["Apollo"],
         samples: ["Best contact: Sofie de Vries, VP Operations (joined Aug 2026). Email verified. Second choice: Mark Jansen, Head of Procurement."],
@@ -414,6 +423,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "strategist",
         name: "Strategist",
+        handoffs: ["writer"],
         role: "Outlines the piece and picks the angle.",
         samples: [
           "Angle: async standups save focus time, but only with 3 rules.\n\nOutline:\n1. The hidden cost of daily meetings\n2. What to write in an async update\n3. Three rules that make it work\n4. A two-week trial plan",
@@ -423,6 +433,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "writer",
         name: "Writer",
+        handoffs: ["seo"],
         role: "Drafts the blog post and three LinkedIn posts.",
         samples: [
           "Why async standups work (when you follow 3 rules)\n\nMost teams don't hate standups; they hate the context switch. A 15-minute meeting at 10:00 can cost an engineer the whole morning's focus.\n\nHere's what changed when we moved ours to a written update…",
@@ -518,6 +529,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "summarizer",
         name: "Summarizer",
+        handoffs: ["extractor"],
         role: "Writes a five-line summary of the meeting.",
         samples: [
           "Weekly product sync (42 min): the new onboarding shipped, churn is flat at 3.1%, and the pricing test starts Monday. Open question: who owns the enterprise SSO rollout?",
@@ -527,6 +539,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "extractor",
         name: "Action extractor",
+        handoffs: ["notifier"],
         role: "Pulls out every commitment with an owner and a due date.",
         samples: [
           "5 action items:\n• Lena: finalise the pricing test copy (Fri 3 Oct)\n• Omar: draft the SSO rollout plan (Tue 7 Oct)\n• Sam: fix the onboarding email typo (today)\n• Maya: share the churn dashboard with sales (Thu 2 Oct)\n• Team: decide who owns SSO (next sync)",
@@ -621,6 +634,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "diff-reader",
         name: "Diff reader",
+        handoffs: ["reviewer"],
         role: "Summarises what a pull request changes.",
         tools: ["GitHub"],
         samples: ["PR #482 adds rate limiting to the public API: new middleware (limits.ts, +120), Redis client wiring (+34) and config flags (+12). 7 files, +214 −31."],
@@ -629,6 +643,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "reviewer",
         name: "Reviewer",
+        handoffs: ["tests"],
         role: "Lists risks by severity with file and line references.",
         tools: ["GitHub"],
         samples: [
@@ -713,6 +728,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "retriever",
         name: "Retriever",
+        handoffs: ["answerer"],
         role: "Finds the passages that answer a question.",
         tools: ["Knowledge base", "Google Drive"],
         samples: ["Found 4 passages: Handbook › Time off §3.2, Handbook › Holidays §3.4, HR FAQ › Carry-over, Payroll › Unpaid leave."],
@@ -826,6 +842,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "researcher",
         name: "Web researcher",
+        handoffs: ["analyst"],
         role: "Gathers sources from the web.",
         tools: ["Web search"],
         samples: ["Gathered 23 sources: 6 market reports, 9 competitor sites, 5 news articles and 3 regulator pages (NHS DSPT, ICO)."],
@@ -834,6 +851,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "analyst",
         name: "Analyst",
+        handoffs: ["writer"],
         role: "Sizes the market and compares competitors.",
         samples: [
           "UK clinic AI note-takers: about £120M in 2026, growing roughly 28% a year. 7 direct competitors; the top 3 hold about 60% share. Buyers care most about NHS compliance, EHR integration and accuracy on medical terms.",
@@ -919,6 +937,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "extractor",
         name: "Extractor",
+        handoffs: ["checker"],
         role: "Reads receipts and pulls out merchant, date, amount and category.",
         samples: ["Receipt read: The Ivy Soho · 12 Sep 2026 · £186.40 · Meals & entertainment · 4 guests listed."],
         trace: "Read 1 receipt · 98% confidence",
@@ -1013,6 +1032,7 @@ export const BLUEPRINTS: Blueprint[] = [
       agent({
         id: "tutor",
         name: "Tutor",
+        handoffs: ["quiz"],
         role: "Explains concepts from your notes in simpler words.",
         tools: ["Knowledge base"],
         samples: [

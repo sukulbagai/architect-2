@@ -1,6 +1,6 @@
 # Handoff: finishing Architect 2.0
 
-These files let a coding agent in another terminal finish the build, one milestone at a time, with no context from earlier sessions. Milestones 1 (foundation) and 2 (simulated plan and build) are done and pushed to `main`. Milestone 3 (iterate) is built on top of them.
+These files let a coding agent in another terminal finish the build, one milestone at a time, with no context from earlier sessions. Milestones 1 (foundation), 2 (simulated plan and build) and 3 (iterate) are done and pushed to `main`. Milestone 4 (agents) is built on top of them.
 
 | File | What it's for |
 | --- | --- |
@@ -14,7 +14,7 @@ These files let a coding agent in another terminal finish the build, one milesto
 
 ## Order and dependencies
 
-Run them in order: **3 → 4 → 5 → 6 → 7** (3 is done). Each one leaves a working app. Where a later milestone leans on an earlier one:
+Run them in order: **3 → 4 → 5 → 6 → 7** (3 and 4 are done). Each one leaves a working app. Where a later milestone leans on an earlier one:
 
 - **M3 → M6:** M3's issues feed the deploy pre-flight.
 - **M3 → M7:** M3's element selection is reused by M7's comments.

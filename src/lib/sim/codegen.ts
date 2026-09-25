@@ -1,6 +1,11 @@
 import { APP_THEMES } from "./themes";
 import { editKind, sizePx } from "./visual";
-import type { Plan, PlanAgent, PlanCollection, PlanPage } from "./types";
+import { agentEntry, agentFiles, agentPackages } from "./agent-code";
+import { frameworkLabel, frameworkOf } from "./frameworks";
+import { isMcpTool, toolLabel } from "./agents";
+import type { Plan, PlanCollection, PlanPage } from "./types";
+
+export { agentEntry, agentFiles } from "./agent-code";
 
 /**
  * Turns a plan into the files of a small but real-looking project. Output is deterministic, so a
@@ -175,29 +180,21 @@ export const ${camel(c.name)}: ${typeName}[] = ${json(c.rows.map((r, i) => ({ id
 `;
 }
 
-function agentYaml(a: PlanAgent) {
-  const tools = a.tools.length ? a.tools.map((t) => `  - ${t}`).join("\n") : "  []";
-  return `# ${a.name} agent
-name: ${a.name}
-framework: ${a.framework}
-model: ${a.model}
-role: ${a.role}
-instructions: |
-  ${a.instructions.replace(/\n/g, "\n  ")}
-tools:
-${tools}
-memory:
-  type: conversation
-  window: 20
-guardrails:
-  - Never send external messages without an approval step unless the plan says so.
-  - Cite the source for any factual claim.
-`;
+/** Where each agent is defined and what runs it. The server's runtime picks an adapter per framework. */
+function agentRegistry(plan: Plan) {
+  if (!plan.agents.length) return "export const AGENTS = {} as const;";
+  return `export const AGENTS = {
+${plan.agents
+  .map((a) => `  ${/^[a-z_$][\w$]*$/i.test(a.id) ? a.id : JSON.stringify(a.id)}: { name: ${JSON.stringify(a.name)}, framework: "${frameworkOf(a.framework).id}", entry: "${agentEntry(a)}" },`)
+  .join("\n")}
+} as const;`;
 }
 
 function agentsClient(plan: Plan, endpoint: string) {
-  const ids = plan.agents.map((a) => `"${a.id}"`).join(" | ") || "string";
-  return `export type AgentId = ${ids};
+  return `/** Where each agent is defined and what runs it (${[...new Set(plan.agents.map((a) => frameworkLabel(a.framework)))].join(", ") || "no agents yet"}). */
+${agentRegistry(plan)}
+
+export type AgentId = keyof typeof AGENTS;
 
 export type AgentRun = {
   output: string;
@@ -600,13 +597,13 @@ ${plan.pages.map((p) => `- **${p.name}**: ${p.purpose}`).join("\n")}
 
 | Agent | Role | Framework | Tools |
 | --- | --- | --- | --- |
-${plan.agents.map((a) => `| ${a.name} | ${a.role} | ${a.framework} | ${a.tools.join(", ") || "none"} |`).join("\n")}
+${plan.agents.map((a) => `| ${a.name} | ${a.role} | ${frameworkLabel(a.framework)} | ${a.tools.map(toolLabel).join(", ") || "none"} |`).join("\n")}
 
 ## Run it locally
 
 ${run}
 
-Agent definitions live in \`agents/\`. Built with Architect.
+Agent definitions live in \`agents/\`${plan.agents.some((a) => frameworkOf(a.framework).id === "mastra") ? " and `src/mastra/agents/`" : ""}, one per agent in its own framework. Built with Architect.
 `;
 }
 
@@ -734,32 +731,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   files["lib/agents.ts"] = agentsClient(plan, "/api/agents/${agent}/run");
   if (usesLiveData(plan)) files["lib/useCollection.ts"] = collectionHookFile();
   files["app/api/agents/[id]/route.ts"] = `import { NextResponse } from "next/server";
-import { loadAgent } from "@/lib/agent-runtime";
+import { runAgent } from "@/lib/agent-runtime";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const { input, context } = await request.json();
-  const agent = await loadAgent(id);
-  const run = await agent.run(input, context);
+  const run = await runAgent(id, input, context);
+  if (!run) return NextResponse.json({ error: \`Unknown agent: \${id}\` }, { status: 404 });
   return NextResponse.json(run);
 }
 `;
-  files["lib/agent-runtime.ts"] = `import { readFile } from "node:fs/promises";
-import path from "node:path";
-
-/** Loads an agent definition from agents/<id>.yaml and runs it with the configured framework. */
-export async function loadAgent(id: string) {
-  const definition = await readFile(path.join(process.cwd(), "agents", \`\${id}.yaml\`), "utf8");
-  return {
-    definition,
-    async run(input: string, context?: unknown) {
-      const started = Date.now();
-      // Framework adapter goes here (${plan.agents[0]?.framework ?? "Lyzr"} by default).
-      return { output: \`\${id} received: \${input}\`, trace: [{ step: "run", ms: Date.now() - started }], context };
-    },
-  };
-}
-`;
+  files["lib/agent-runtime.ts"] = agentRuntime(plan);
   for (const c of plan.data) files[`lib/data/${c.id}.ts`] = dataFile(c);
   for (const pg of plan.pages) {
     const dir = pg === plan.pages[0] ? "app" : `app/${pg.id}`;
@@ -791,51 +773,175 @@ async def run_agent(agent_id: str, body: RunRequest):
         raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_id}")
     return await agent.run(body.input, body.context or {})
 `;
-  files["backend/agents.py"] = `"""Agents for ${plan.appName}. Definitions live in ../agents/*.yaml."""
+  files["backend/agents.py"] = pythonRuntime(plan);
+  return files;
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Agent runtime and dependencies
+// ---------------------------------------------------------------------------------------------
+
+const PY_FRAMEWORKS = new Set(["langgraph", "crewai", "google-adk"]);
+const TS_FRAMEWORKS = new Set(["openai-agents", "claude-agent-sdk", "mastra"]);
+
+function usedFrameworks(plan: Plan) {
+  return [...new Set(plan.agents.map((a) => frameworkOf(a.framework).id))];
+}
+
+/** Next.js: one adapter per framework the plan uses. Hosted ones call Lyzr; code-first ones import the agent. */
+function agentRuntime(plan: Plan) {
+  const used = usedFrameworks(plan);
+  const lines: string[] = [];
+  for (const f of used) {
+    const key = /^[a-z]+$/.test(f) ? f : JSON.stringify(f);
+    if (f === "lyzr" || f === "gitagent") lines.push(`  ${key}: (agent, input, context) => runHosted(agent.entry, input, context),`);
+    else if (PY_FRAMEWORKS.has(f)) lines.push(`  ${key}: (agent, input, context) => runPython(agent.entry, input, context),`);
+    else lines.push(`  ${key}: async (agent, input) => ({ output: await (await import(\`@/\${agent.entry.replace(/\\.ts$/, "")}\`)).run(input), trace: [] }),`);
+  }
+  const hosted = used.some((f) => f === "lyzr" || f === "gitagent");
+  const python = used.some((f) => PY_FRAMEWORKS.has(f));
+  return `import { AGENTS, type AgentId } from "./agents";
+
+type Run = { output: string; trace: { step: string; ms: number }[] };
+type Adapter = (agent: (typeof AGENTS)[AgentId], input: string, context?: unknown) => Promise<Run>;
+
+/** One adapter per framework this project uses: ${used.map((f) => frameworkLabel(f)).join(", ") || "none yet"}. */
+const adapters: Partial<Record<string, Adapter>> = {
+${lines.join("\n")}
+};
+${
+  hosted
+    ? `
+/** Lyzr and GitAgent agents run hosted, from the definition in this repo. */
+async function runHosted(entry: string, input: string, context?: unknown): Promise<Run> {
+  const res = await fetch(\`\${process.env.LYZR_RUNTIME_URL}/run\`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: \`Bearer \${process.env.AGENT_API_KEY}\` },
+    body: JSON.stringify({ definition: entry, input, context }),
+  });
+  if (!res.ok) throw new Error(\`Hosted run failed: \${res.status}\`);
+  return res.json();
+}
+`
+    : ""
+}${
+  python
+    ? `
+/** Python agents (LangGraph, CrewAI, Google ADK) run in a small worker next to this app. */
+async function runPython(entry: string, input: string, context?: unknown): Promise<Run> {
+  const res = await fetch(\`\${process.env.PYTHON_WORKER_URL}/run\`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ module: entry.replace(/\\/agent\\.py$|\\.py$/, "").replaceAll("/", "."), input, context }),
+  });
+  if (!res.ok) throw new Error(\`Python worker failed: \${res.status}\`);
+  return res.json();
+}
+`
+    : ""
+}
+export async function runAgent(id: string, input: string, context?: unknown): Promise<Run | null> {
+  const agent = AGENTS[id as AgentId];
+  if (!agent) return null;
+  const adapter = adapters[agent.framework];
+  if (!adapter) throw new Error(\`No adapter for \${agent.framework}\`);
+  const started = Date.now();
+  const run = await adapter(agent, input, context);
+  return { ...run, trace: [...run.trace, { step: "total", ms: Date.now() - started }] };
+}
+`;
+}
+
+/** FastAPI: Python agents are imported directly; hosted and TypeScript ones are called over HTTP. */
+function pythonRuntime(plan: Plan) {
+  const rows = plan.agents.map((a) => `    "${a.id}": Agent("${a.id}", ${JSON.stringify(a.name)}, "${frameworkOf(a.framework).id}", "${agentEntry(a)}"),`);
+  return `"""Agents for ${plan.appName}: ${[...new Set(plan.agents.map((a) => frameworkLabel(a.framework)))].join(", ") || "none yet"}."""
 from dataclasses import dataclass
-from pathlib import Path
+import importlib
+import os
 import time
 
-import yaml
+import httpx
 
-AGENT_DIR = Path(__file__).resolve().parent.parent / "agents"
+PYTHON_FRAMEWORKS = {"langgraph", "crewai", "google-adk"}
 
 
 @dataclass
 class Agent:
     id: str
     name: str
-    role: str
-    instructions: str
-    tools: list[str]
+    framework: str
+    entry: str
 
     async def run(self, text: str, context: dict) -> dict:
         started = time.perf_counter()
-        # Framework adapter goes here (${plan.agents[0]?.framework ?? "Lyzr"} by default).
-        output = f"{self.name} received: {text}"
-        return {"output": output, "trace": [{"step": "run", "ms": int((time.perf_counter() - started) * 1000)}]}
+        if self.framework in PYTHON_FRAMEWORKS:
+            module = importlib.import_module(self.entry.removesuffix("/agent.py").removesuffix(".py").replace("/", "."))
+            output = module.run(text) if hasattr(module, "run") else str(module.root_agent)
+        else:
+            # Lyzr and GitAgent run hosted; TypeScript agents run in the Node worker.
+            url = os.environ["LYZR_RUNTIME_URL" if self.framework in {"lyzr", "gitagent"} else "NODE_WORKER_URL"]
+            async with httpx.AsyncClient(timeout=60) as client:
+                res = await client.post(f"{url}/run", json={"definition": self.entry, "input": text, "context": context})
+                res.raise_for_status()
+                output = res.json()["output"]
+        return {"output": output, "trace": [{"step": self.framework, "ms": int((time.perf_counter() - started) * 1000)}]}
 
 
-def _load(agent_id: str) -> Agent:
-    spec = yaml.safe_load((AGENT_DIR / f"{agent_id}.yaml").read_text())
-    return Agent(agent_id, spec["name"], spec["role"], spec["instructions"], spec.get("tools") or [])
-
-
-AGENTS = {${plan.agents.map((a) => `\n    "${a.id}": _load("${a.id}"),`).join("")}
+AGENTS = {
+${rows.join("\n")}
 }
 `;
-  return files;
+}
+
+function mergePackageJson(source: string, packages: string[]) {
+  const pkg = JSON.parse(source) as { dependencies?: Record<string, string> };
+  const deps = { ...(pkg.dependencies ?? {}) };
+  for (const spec of packages) {
+    const at = spec.lastIndexOf("@");
+    deps[spec.slice(0, at)] = spec.slice(at + 1);
+  }
+  pkg.dependencies = Object.fromEntries(Object.entries(deps).sort(([a], [b]) => a.localeCompare(b)));
+  return json(pkg) + "\n";
+}
+
+/** Framework SDKs go into the generated project's own manifests, never Architect's. */
+function addAgentPackages(files: Record<string, string>, plan: Plan, stack: Stack) {
+  const { python, node } = agentPackages(plan);
+  const pkgPath = stack === "fastapi-react" ? "frontend/package.json" : "package.json";
+  if (node.length && files[pkgPath]) files[pkgPath] = mergePackageJson(files[pkgPath], node);
+  if (!python.length) return;
+  if (stack === "fastapi-react") {
+    const have = new Set(files["backend/requirements.txt"].trim().split("\n"));
+    files["backend/requirements.txt"] = [...have, ...python.filter((p) => !have.has(p))].join("\n") + "\n";
+  } else {
+    files["agents/requirements.txt"] = `# Python agents in this folder (${usedFrameworks(plan)
+      .filter((f) => PY_FRAMEWORKS.has(f))
+      .map((f) => frameworkLabel(f))
+      .join(", ")}). Install with: pip install -r agents/requirements.txt\n${python.join("\n")}\n`;
+  }
+}
+
+function envExample(plan: Plan) {
+  const used = usedFrameworks(plan);
+  const lines = ["# Keys for the agent frameworks and integrations. Never commit real values.", "AGENT_API_KEY="];
+  if (used.some((f) => f === "lyzr" || f === "gitagent")) lines.push("LYZR_RUNTIME_URL=");
+  if (used.some((f) => PY_FRAMEWORKS.has(f) || TS_FRAMEWORKS.has(f))) lines.push("ANTHROPIC_API_KEY=", "ARCHITECT_TOOLS_URL=");
+  if (used.some((f) => PY_FRAMEWORKS.has(f))) lines.push("PYTHON_WORKER_URL=");
+  for (const i of plan.integrations.filter((i) => i !== "Knowledge base" && i !== "Web search")) lines.push(`${i.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_TOKEN=`);
+  const mcp = [...new Set(plan.agents.flatMap((a) => a.tools.filter(isMcpTool).map(toolLabel)))];
+  for (const m of mcp) lines.push(`${m.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_MCP_URL=`);
+  return [...new Set(lines)].join("\n") + "\n";
 }
 
 export function generateFiles(plan: Plan, stack: string = "react-vite"): Record<string, string> {
   const s = (["react-vite", "nextjs", "fastapi-react"].includes(stack) ? stack : "react-vite") as Stack;
   const files = s === "nextjs" ? nextjs(plan) : s === "fastapi-react" ? fastapiReact(plan) : reactVite(plan);
-  for (const a of plan.agents) files[`agents/${a.id}.yaml`] = agentYaml(a);
+  for (const a of plan.agents) Object.assign(files, agentFiles(a, plan));
+  addAgentPackages(files, plan, s);
   files["README.md"] = readme(plan, s);
-  files[".env.example"] = `# Keys for the agent framework and integrations. Never commit real values.\nAGENT_API_KEY=\n${plan.integrations
-    .filter((i) => i !== "Knowledge base" && i !== "Web search")
-    .map((i) => `${i.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_TOKEN=`)
-    .join("\n")}\n`;
+  files[".env.example"] = envExample(plan);
   for (const [path, content] of Object.entries(plan.fileOverrides ?? {})) {
     if (content === null) delete files[path];
     else files[path] = content;

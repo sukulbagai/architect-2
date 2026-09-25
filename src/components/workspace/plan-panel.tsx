@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { ArrowRight, Bot, Check, FileText, Hammer, Loader2, Plus, User, Wrench, X } from "lucide-react";
+import dynamic from "next/dynamic";
+import { ArrowRight, Check, FileText, Hammer, Loader2, Plus, Wrench, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { newAgent, newPage, estimate } from "@/lib/sim/plan";
 import { APP_THEMES } from "@/lib/sim/themes";
@@ -9,7 +10,14 @@ import type { PageKind, Plan } from "@/lib/sim/types";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
 import { PageIcon } from "@/components/preview/bits";
+import { AgentAvatar, FrameworkChip } from "@/components/agents/agent-bits";
+import { toolLabel } from "@/lib/sim/agents";
 import type { Workspace } from "./use-workspace";
+
+const AgentFlow = dynamic(() => import("@/components/agents/agent-flow").then((m) => m.AgentFlow), {
+  ssr: false,
+  loading: () => <div className="h-full animate-pulse bg-muted/30" />,
+});
 
 const KIND_LABEL: Record<PageKind, string> = {
   dashboard: "Dashboard",
@@ -207,14 +215,12 @@ export function PlanPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
         </Button>
       </Section>
 
-      <Section n={3} show={r >= 3} title="Agents" hint={isPro ? "Framework per agent arrives with the Agents milestone" : undefined}>
+      <Section n={3} show={r >= 3} title="Agents" hint="Open one to set its tools, framework and guardrails">
         <ul className="space-y-2">
           {plan.agents.map((a, i) => (
             <li key={a.id} className="group rounded-xl border border-border bg-card px-3.5 py-3 shadow-card">
               <div className="flex items-start gap-3">
-                <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-brand-soft text-brand-text">
-                  <Bot className="size-3.5" />
-                </span>
+                <AgentAvatar id={a.id} name={a.name} className="mt-0.5 size-7 rounded-md text-[10px]" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <input
@@ -223,7 +229,16 @@ export function PlanPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
                       onChange={(e) => set({ agents: plan.agents.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)) })}
                       className="min-w-0 flex-1 rounded bg-transparent text-sm font-medium outline-none focus:bg-muted/50"
                     />
-                    {isPro && <span className="font-mono text-[11px] text-muted-foreground">{a.framework} · {a.model}</span>}
+                    <button
+                      type="button"
+                      onClick={() => ws.openAgent(a.id)}
+                      className="group/agent inline-flex shrink-0 items-center gap-1 rounded-md text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                      aria-label={`Open ${a.name} in the Agents tab`}
+                    >
+                      <FrameworkChip framework={a.framework} className="group-hover/agent:border-border-strong" />
+                      {isPro && <span className="hidden font-mono sm:inline">{a.model.replace("claude-", "")}</span>}
+                      <ArrowRight className="size-3" />
+                    </button>
                   </div>
                   <AutoTextarea
                     ariaLabel="Agent role"
@@ -236,7 +251,7 @@ export function PlanPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
                       {a.tools.map((t) => (
                         <span key={t} className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                           <Wrench className="size-2.5" />
-                          {t}
+                          {toolLabel(t)}
                         </span>
                       ))}
                     </div>
@@ -276,19 +291,10 @@ export function PlanPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
         </Button>
       </Section>
 
-      <Section n={4} show={r >= 4} title="How the agents work together">
-        <div className="overflow-x-auto rounded-xl border border-border bg-sunken p-4 scrollbar-thin">
-          <div className="flex min-w-max items-center gap-2">
-            <FlowNode icon={<User className="size-3.5" />} title="Someone uses the app" sub={plan.pages.find((p) => p.kind === "run")?.input?.label ?? "Opens a page"} />
-            {plan.agents.map((a) => (
-              <div key={a.id} className="flex items-center gap-2">
-                <FlowArrow />
-                <FlowNode icon={<Bot className="size-3.5" />} title={a.name} sub={a.tools.length ? a.tools.join(", ") : "No tools"} accent />
-              </div>
-            ))}
-            <FlowArrow />
-            <FlowNode icon={<Check className="size-3.5" />} title="Result in the app" sub={plan.integrations.filter((i) => i !== "Knowledge base").slice(0, 2).join(", ") || "Saved to the app"} />
-          </div>
+      <Section n={4} show={r >= 4} title="How the agents work together" hint="Pages, handoffs and where results go">
+        <div className="relative h-[300px] overflow-hidden rounded-xl border border-border bg-sunken">
+          <div className="bg-grid pointer-events-none absolute inset-0 opacity-60" />
+          <AgentFlow plan={plan} compact onSelect={(id) => ws.openAgent(id)} connections={ws.connections} />
         </div>
       </Section>
 
@@ -337,25 +343,5 @@ export function PlanPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
         )}
       </Section>
     </div>
-  );
-}
-
-function FlowNode({ icon, title, sub, accent }: { icon: React.ReactNode; title: string; sub: string; accent?: boolean }) {
-  return (
-    <div className={cn("w-40 rounded-lg border bg-card px-3 py-2.5 shadow-card", accent ? "border-brand/30" : "border-border")}>
-      <p className="flex items-center gap-1.5 text-xs font-medium">
-        <span className={accent ? "text-brand-text" : "text-muted-foreground"}>{icon}</span>
-        <span className="truncate">{title}</span>
-      </p>
-      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{sub}</p>
-    </div>
-  );
-}
-
-function FlowArrow() {
-  return (
-    <svg width="28" height="10" viewBox="0 0 28 10" aria-hidden="true" className="shrink-0 text-border-strong">
-      <path d="M0 5h24M20 1l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
   );
 }

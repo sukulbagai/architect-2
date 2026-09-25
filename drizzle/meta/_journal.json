@@ -15,6 +15,13 @@
       "when": 1790349218901,
       "tag": "0001_version_plan",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790358062203,
+      "tag": "0002_agents_connections",
+      "breakpoints": true
     }
   ]
 }

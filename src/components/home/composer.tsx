@@ -26,6 +26,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -38,6 +39,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Mode } from "@/db/schema";
+import { frameworkLabel } from "@/lib/sim/frameworks";
+
+/** A standalone agent the composer can add to a new project. */
+export type ComposerAgent = { id: string; name: string; role: string; framework: string };
 
 export const DRAFT_KEY = "architect:draft";
 
@@ -69,9 +74,12 @@ export function Composer({
   variant = "app",
   initialPrompt,
   autoFocus = false,
+  agents = [],
   className,
 }: {
   mode?: Mode;
+  /** Standalone agents, offered under + → Add existing agents. */
+  agents?: ComposerAgent[];
   /** "app" creates a project. "landing" keeps the prompt as a draft and sends the visitor to sign in. */
   variant?: "app" | "landing";
   initialPrompt?: string;
@@ -85,6 +93,7 @@ export function Composer({
   const [stack, setStack] = useState<string>("react-vite");
   const [model, setModel] = useState<string>("claude-opus-5");
   const [planFirst, setPlanFirst] = useState(true);
+  const [attached, setAttached] = useState<string[]>([]);
   const [exampleIndex, setExampleIndex] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -151,6 +160,7 @@ export function Composer({
             themePreset: themePreset ?? undefined,
             attachments,
           },
+          attachedAgentIds: attached,
         });
         router.push(`/p/${id}`);
       } catch (err) {
@@ -162,6 +172,7 @@ export function Composer({
   }
 
   const theme = THEME_PRESETS.find((t) => t.id === themePreset);
+  const picked = agents.filter((a) => attached.includes(a.id));
   const canSend = prompt.trim().length >= 3 && !pending;
 
   return (
@@ -203,7 +214,7 @@ export function Composer({
         className="block max-h-80 min-h-[88px] w-full resize-none bg-transparent px-5 pt-4 pb-2 text-[15px] leading-relaxed outline-none placeholder:transition-opacity"
       />
 
-      {(attachments.length > 0 || theme || (isPro && (stack !== "react-vite" || model !== "claude-opus-5"))) && (
+      {(attachments.length > 0 || theme || picked.length > 0 || (isPro && (stack !== "react-vite" || model !== "claude-opus-5"))) && (
         <div className="flex flex-wrap gap-1.5 px-4 pb-2">
           {attachments.map((a) => {
             const Icon = KIND_META[a.kind].icon;
@@ -217,6 +228,13 @@ export function Composer({
               </Chip>
             );
           })}
+          {picked.map((a) => (
+            <Chip key={a.id} onRemove={() => setAttached((ids) => ids.filter((x) => x !== a.id))}>
+              <Bot className="size-3.5 text-muted-foreground" />
+              <span className="max-w-40 truncate">{a.name}</span>
+              <span className="text-subtle-foreground">Agent</span>
+            </Chip>
+          ))}
           {theme && (
             <Chip onRemove={() => setThemePreset(null)}>
               <Swatch colors={theme.swatch} />
@@ -276,13 +294,42 @@ export function Composer({
                     </DropdownMenuRadioGroup>
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
-                <DropdownMenuItem disabled>
-                  <Bot />
-                  <span className="flex-1">
-                    Add existing agents
-                    <span className="block text-xs text-muted-foreground">Agents you build will show up here</span>
-                  </span>
-                </DropdownMenuItem>
+                {agents.length === 0 ? (
+                  <DropdownMenuItem onSelect={() => router.push("/agents/new")}>
+                    <Bot />
+                    <span className="flex-1">
+                      Add existing agents
+                      <span className="block text-xs text-muted-foreground">None yet. Build one on the Agents page</span>
+                    </span>
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Bot />
+                      Add existing agents
+                      {attached.length > 0 && <span className="ml-auto font-mono text-[11px] text-muted-foreground">{attached.length}</span>}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="max-h-80 w-64 overflow-y-auto">
+                      <DropdownMenuLabel className="annotation py-1">Your standalone agents</DropdownMenuLabel>
+                      {agents.map((a) => (
+                        <DropdownMenuCheckboxItem
+                          key={a.id}
+                          checked={attached.includes(a.id)}
+                          onSelect={(e) => e.preventDefault()}
+                          onCheckedChange={(on) => setAttached((ids) => (on ? [...ids, a.id] : ids.filter((x) => x !== a.id)))}
+                          className="items-start"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate">{a.name}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {frameworkLabel(a.framework)} · {a.role}
+                            </span>
+                          </span>
+                        </DropdownMenuCheckboxItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                )}
                 {isPro && (
                   <>
                     <DropdownMenuSeparator />

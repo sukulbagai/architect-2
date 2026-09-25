@@ -1,10 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { messages, projects, type ProjectSettings } from "@/db/schema";
+import { agents, messages, projects, type ProjectSettings } from "@/db/schema";
+import { rowToPlanAgent } from "@/lib/agent-store";
 import { requireWorkspace } from "@/lib/session";
 import { rowId, shortId, slugify } from "@/lib/ids";
 import { nameFromPrompt } from "@/lib/format";
@@ -25,6 +26,8 @@ const createSchema = z.object({
         .optional(),
     })
     .optional(),
+  /** Standalone agents to include in the plan (Home composer, + → Add existing agents). */
+  attachedAgentIds: z.array(z.string().max(40)).max(10).optional(),
 });
 
 export async function createProject(input: z.infer<typeof createSchema>) {
@@ -35,12 +38,20 @@ export async function createProject(input: z.infer<typeof createSchema>) {
   const template = data.templateId ? getTemplate(data.templateId) : undefined;
   const name = template?.name ?? nameFromPrompt(data.prompt);
   const id = shortId();
+  // Snapshot the picked agents: the plan keeps its own copy, so later edits to either stay separate.
+  const picked = data.attachedAgentIds?.length
+    ? await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.workspaceId, ws.id), isNull(agents.projectId), inArray(agents.id, data.attachedAgentIds)))
+    : [];
   const settings: ProjectSettings = {
     planFirst: true,
     stack: "react-vite",
     model: "claude-opus-5",
     ...data.settings,
     ...(template ? { templateId: template.id } : {}),
+    ...(picked.length ? { attachedAgents: picked.map((r) => rowToPlanAgent(r)) } : {}),
   };
 
   await db.insert(projects).values({

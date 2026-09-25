@@ -40,6 +40,8 @@ import type { ClientMessage, ClientVersion } from "@/lib/actions/build";
 import type { Mode } from "@/db/schema";
 import type { EditTarget } from "@/lib/sim/visual";
 import type { Plan } from "@/lib/sim/types";
+import type { ConnectionView } from "@/lib/integrations";
+import { describeAgentChanges } from "@/lib/sim/agents";
 import { LogoMark } from "@/components/brand/logo";
 import { StatusBadge } from "@/components/common/status-badge";
 import { useModeSwitch } from "@/components/shell/app-shell";
@@ -63,7 +65,8 @@ import { PreviewPanel, type Device } from "./stage-preview";
 import { CodePanel } from "./stage-code";
 import { PlanPanel } from "./plan-panel";
 import { ReviewPanel } from "./review-panel";
-import { AgentsPanel, DataPanel, SettingsPanel, VersionsPanel } from "./stage-panels";
+import { DataPanel, SettingsPanel, VersionsPanel } from "./stage-panels";
+import { AgentsPanel } from "./stage-agents";
 import { BottomDrawer, DRAWER_MAX, DRAWER_MIN, type DrawerTab } from "./bottom-drawer";
 
 const TABS: { id: TabId; label: string; icon: typeof AppWindow; pro?: boolean }[] = [
@@ -94,6 +97,11 @@ export function Workspace(props: {
   autoBuild: boolean;
   mode: Mode;
   user: string;
+  /** Shown on connect consent screens (the workspace's email, or its name). */
+  account: string;
+  connections: ConnectionView[];
+  initialTab?: TabId | null;
+  initialAgentId?: string | null;
 }) {
   const router = useRouter();
   const { mode, change } = useModeSwitch(props.mode);
@@ -115,6 +123,10 @@ export function Workspace(props: {
   const scroller = useRef<HTMLDivElement>(null);
 
   const hasReview = isPro && !!ws.pendingProposal;
+  const agentsDirty = Object.entries(ws.agentDrafts).some(([id, d]) => {
+    const saved = ws.plan?.agents.find((a) => a.id === id);
+    return !!saved && describeAgentChanges(saved, d).length > 0;
+  });
   const hasCode = isPro || showCodeInSimple;
   const visibleTabs = TABS.filter((t) => (t.id === "review" ? hasReview : t.id === "code" ? hasCode : true));
   const tab = visibleTabs.some((t) => t.id === ws.tab) ? ws.tab : "preview";
@@ -220,7 +232,7 @@ export function Workspace(props: {
   // ⌘K: what this project adds to the command palette
 
   const { issues, pendingProposal, project, plan, previousVersion, versions, currentVersionId, currentVersion, settings } = ws;
-  const { fixIssue, runBuild, setTab, undo, restore, openCode, runTests, updateSettings } = ws;
+  const { fixIssue, runBuild, setTab, undo, restore, openCode, runTests, updateSettings, openAgent } = ws;
   const buildNow = project.stage === "plan" && !!plan && !ws.build;
   const suggestions = useMemo<CommandItem[]>(() => {
     const out: CommandItem[] = [];
@@ -260,6 +272,20 @@ export function Workspace(props: {
             children: {
               placeholder: "Pick a version to restore…",
               items: others.map((v) => ({ id: `v-${v.id}`, label: `v${v.number} · ${v.summary}`, hint: timeAgo(v.createdAt), run: () => void restore(v.id) })),
+            },
+          },
+        ]
+      : []),
+    ...(plan?.agents.length
+      ? [
+          {
+            id: "open-agent",
+            label: "Open an agent…",
+            icon: Bot,
+            keywords: ["agent", "framework", "tools", "test"],
+            children: {
+              placeholder: "Pick an agent…",
+              items: plan.agents.map((a) => ({ id: `agent-${a.id}`, label: a.name, hint: a.role, run: () => { openAgent(a.id); setMobileView("app"); } })),
             },
           },
         ]
@@ -455,6 +481,7 @@ export function Workspace(props: {
                     </span>
                   )}
                   {id === "plan" && ws.planDirty && <span className="size-1.5 rounded-full bg-warning" aria-label="Unapplied changes" />}
+                  {id === "agents" && agentsDirty && <span className="size-1.5 rounded-full bg-warning" aria-label="Unsaved agent changes" />}
                   {id === "code" && ws.build && <span className="size-1.5 animate-pulse rounded-full bg-brand" aria-label="Writing files" />}
                 </button>
               ))}
@@ -576,7 +603,7 @@ export function Workspace(props: {
             )}
           </div>
 
-          <div className={cn("relative min-h-0 flex-1", tab === "preview" ? "bg-sunken" : "bg-background", tab !== "code" && tab !== "review" && "overflow-y-auto scrollbar-thin")}>
+          <div className={cn("relative min-h-0 flex-1", tab === "preview" ? "bg-sunken" : "bg-background", tab !== "code" && tab !== "review" && tab !== "agents" && "overflow-y-auto scrollbar-thin")}>
             {tab === "preview" && <div className="bg-grid-major pointer-events-none absolute inset-0" />}
             <div className="relative h-full">
               {tab === "preview" && (
@@ -592,7 +619,7 @@ export function Workspace(props: {
               )}
               {tab === "review" && <ReviewPanel ws={ws} />}
               {tab === "plan" && <PlanPanel ws={ws} isPro={isPro} />}
-              {tab === "agents" && <AgentsPanel ws={ws} isPro={isPro} />}
+              {tab === "agents" && <AgentsPanel ws={ws} isPro={isPro} account={props.account} />}
               {tab === "data" && <DataPanel ws={ws} isPro={isPro} />}
               {tab === "code" && <CodePanel ws={ws} isPro={isPro} />}
               {tab === "versions" && <VersionsPanel ws={ws} isPro={isPro} />}

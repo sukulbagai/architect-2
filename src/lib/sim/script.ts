@@ -1,4 +1,5 @@
 import { diffLines } from "diff";
+import { agentFiles } from "./agent-code";
 import type { BuildEvent, BuildScript, BuildSummary, EditSummary, Plan } from "./types";
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -32,11 +33,22 @@ export function buildScript(plan: Plan, files: Record<string, string>): BuildScr
   });
 
   events.push({ at: at(250), type: "step", step: "agents", status: "active" });
+  // Each agent's files in its own framework (one YAML for Lyzr, a folder for GitAgent…).
+  const agentPaths = new Set<string>();
   for (const a of plan.agents) {
     events.push({ at: at(350), type: "sub", step: "agents", text: `Creating ${a.name}` });
-    const path = `agents/${a.id}.yaml`;
-    if (files[path]) events.push({ at: t, type: "file", path, duration: 700 });
-    at(800);
+    const paths = Object.keys(agentFiles(a, plan)).filter((p) => files[p] !== undefined);
+    paths.forEach((path, i) => {
+      agentPaths.add(path);
+      events.push({ at: t, type: "file", path, duration: i === 0 ? 700 : 260 });
+      at(i === 0 ? 800 : 300);
+    });
+    if (!paths.length) at(800);
+  }
+  if (files["agents/requirements.txt"]) {
+    agentPaths.add("agents/requirements.txt");
+    events.push({ at: t, type: "file", path: "agents/requirements.txt", duration: 300 });
+    at(340);
   }
   events.push({ at: at(200), type: "step", step: "agents", status: "done", detail: plan.agents.map((a) => a.name).join(", ") });
 
@@ -61,7 +73,7 @@ export function buildScript(plan: Plan, files: Record<string, string>): BuildScr
 
   events.push({ at: at(250), type: "step", step: "ui", status: "active" });
   const ui = Object.keys(files)
-    .filter((p) => !p.startsWith("agents/") && !/data\/[^/]+\.ts$/.test(p) && p !== "README.md" && p !== ".env.example")
+    .filter((p) => !agentPaths.has(p) && !p.startsWith("agents/") && !/data\/[^/]+\.ts$/.test(p) && p !== "README.md" && p !== ".env.example")
     .sort((a, b) => fileOrder(a) - fileOrder(b) || a.localeCompare(b));
   const firstPage = ui.find((p) => fileOrder(p) === 4);
   const budget = 12500;

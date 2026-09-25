@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { ArrowRight } from "lucide-react";
 import { getDb } from "@/db";
-import { projects } from "@/db/schema";
+import { agents, projects } from "@/db/schema";
 import { requireWorkspace } from "@/lib/session";
 import { firstName } from "@/lib/format";
 import { ROLES } from "@/lib/constants";
@@ -20,12 +20,14 @@ export default async function HomePage({ searchParams }: PageProps<"/home">) {
   const ws = await requireWorkspace();
   const sp = await searchParams;
   const db = await getDb();
-  const recent = await db
-    .select()
-    .from(projects)
-    .where(eq(projects.workspaceId, ws.id))
-    .orderBy(desc(projects.updatedAt))
-    .limit(3);
+  const [recent, standalone] = await Promise.all([
+    db.select().from(projects).where(eq(projects.workspaceId, ws.id)).orderBy(desc(projects.updatedAt)).limit(3),
+    db
+      .select({ id: agents.id, name: agents.name, role: agents.role, framework: agents.framework })
+      .from(agents)
+      .where(and(eq(agents.workspaceId, ws.id), isNull(agents.projectId)))
+      .orderBy(desc(agents.updatedAt)),
+  ]);
   const templates = templatesForRole(ws.role, 6);
   const roleLabel = ROLES.find((r) => r.id === ws.role)?.label;
   const isPro = ws.mode === "pro";
@@ -46,7 +48,7 @@ export default async function HomePage({ searchParams }: PageProps<"/home">) {
               ? "Describe it, or pick a stack and model from the + menu. You'll see every file as it's written."
               : "Describe it in plain words. Architect asks a few questions and shows you a plan before it builds anything."}
           </p>
-          <Composer mode={ws.mode} autoFocus={sp.new === "1"} className="mt-7" />
+          <Composer mode={ws.mode} autoFocus={sp.new === "1"} agents={standalone} className="mt-7" />
           <StartOptions className="mt-5" role={ws.role} openConsultant={sp.consultant === "1"} />
         </section>
 

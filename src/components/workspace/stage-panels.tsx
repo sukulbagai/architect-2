@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Bot, ChevronDown, Database, Eye, History, RotateCcw, Trash2, Wrench } from "lucide-react";
+import { ChevronDown, Database, Eye, History, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/format";
@@ -139,59 +139,6 @@ export function VersionsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) 
           );
         })}
       </ol>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------------------------
-// Agents
-
-export function AgentsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
-  const agents = ws.plan?.agents ?? [];
-  if (agents.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center p-6">
-        <EmptyState className="w-full max-w-lg bg-background/70" icon={<Bot />} title="No agents yet" description="The plan decides which agents your app needs. They show up here with their role, tools and model." />
-      </div>
-    );
-  }
-  return (
-    <div className="mx-auto max-w-4xl p-4 md:p-6">
-      <div className="grid gap-3 md:grid-cols-2">
-        {agents.map((a) => (
-          <div key={a.id} className="flex flex-col rounded-xl border border-border bg-card p-4 shadow-card">
-            <div className="flex items-start gap-3">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand-text">
-                <Bot className="size-4" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">{a.name}</p>
-                <p className="text-xs leading-relaxed text-muted-foreground">{a.role}</p>
-              </div>
-            </div>
-            <dl className="mt-4 grid grid-cols-2 gap-3 text-xs">
-              <div>
-                <dt className="annotation">Framework</dt>
-                <dd className="mt-1 font-mono">{a.framework}</dd>
-              </div>
-              <div>
-                <dt className="annotation">Model</dt>
-                <dd className="mt-1 font-mono">{a.model}</dd>
-              </div>
-            </dl>
-            <div className="mt-3 flex flex-wrap gap-1">
-              {(a.tools.length ? a.tools : ["No tools"]).map((t) => (
-                <span key={t} className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                  <Wrench className="size-2.5" />
-                  {t}
-                </span>
-              ))}
-            </div>
-            {isPro && <p className="mt-3 line-clamp-3 rounded-lg bg-sunken p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">{a.instructions}</p>}
-          </div>
-        ))}
-      </div>
-      <p className="mt-4 text-xs text-muted-foreground">Testing each agent on its own, picking a framework and connecting tools arrive with the Agents milestone.</p>
     </div>
   );
 }
