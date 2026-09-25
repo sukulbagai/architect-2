@@ -47,7 +47,7 @@ export default async function HomePage({ searchParams }: PageProps<"/home">) {
               : "Describe it in plain words. Architect asks a few questions and shows you a plan before it builds anything."}
           </p>
           <Composer mode={ws.mode} autoFocus={sp.new === "1"} className="mt-7" />
-          <StartOptions className="mt-5" />
+          <StartOptions className="mt-5" role={ws.role} />
         </section>
 
         {recent.length > 0 && (

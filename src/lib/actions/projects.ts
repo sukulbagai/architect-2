@@ -9,6 +9,7 @@ import { requireWorkspace } from "@/lib/session";
 import { rowId, shortId, slugify } from "@/lib/ids";
 import { nameFromPrompt } from "@/lib/format";
 import { getTemplate } from "@/lib/templates";
+import { buildPlan, matchBlueprint } from "@/lib/sim/plan";
 
 const createSchema = z.object({
   prompt: z.string().trim().min(3, "Describe what you want to build.").max(8000),
@@ -63,6 +64,25 @@ export async function createProject(input: z.infer<typeof createSchema>) {
     data: settings.attachments?.length ? { attachments: settings.attachments } : null,
   });
 
+  // Simulated planning: match the prompt to a blueprint, then either ask its questions or plan straight away.
+  const blueprint = matchBlueprint(data.prompt, template?.id, name);
+  if (settings.planFirst === false) {
+    const plan = { ...buildPlan({ blueprint, appName: name, settings }), appName: name };
+    await db.update(projects).set({ plan }).where(eq(projects.id, id));
+  } else {
+    await db.insert(messages).values({
+      id: rowId(),
+      projectId: id,
+      role: "assistant",
+      kind: "questions",
+      content: template
+        ? `Good pick. A few quick questions so ${template.name} fits the way you work.`
+        : "Before I plan it, a few quick questions.",
+      data: { questions: blueprint.questions, blueprintId: blueprint.id },
+      createdAt: new Date(Date.now() + 5),
+    });
+  }
+
   revalidatePath("/", "layout");
   return { id };
 }
@@ -97,6 +117,7 @@ export async function duplicateProject(id: string) {
     name,
     slug: `${slugify(name)}-${newId.slice(0, 4)}`,
     status: "draft",
+    stage: project.plan ? "plan" : project.stage,
     repo: null,
     currentVersionId: null,
     createdAt: new Date(),

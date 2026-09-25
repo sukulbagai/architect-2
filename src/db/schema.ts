@@ -14,6 +14,8 @@ export type ProjectStatus = "draft" | "building" | "live" | "error";
 export type ProjectStage = "plan" | "build" | "ready";
 export type ProjectSource = "prompt" | "template" | "import";
 
+export type MessageKind = "chat" | "questions" | "plan" | "plan-reply" | "build" | "edit" | "event";
+
 export type ProjectSettings = {
   themePreset?: string;
   model?: string;
@@ -78,7 +80,7 @@ export const messages = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     role: text("role").$type<"user" | "assistant" | "system">().notNull(),
-    kind: text("kind").$type<"chat" | "plan" | "build" | "event">().notNull().default("chat"),
+    kind: text("kind").$type<MessageKind>().notNull().default("chat"),
     content: text("content").notNull().default(""),
     data: jsonb("data"),
     createdAt: createdAt(),
@@ -96,6 +98,8 @@ export const versions = pgTable(
     number: integer("number").notNull(),
     summary: text("summary").notNull().default(""),
     files: jsonb("files").$type<Record<string, string>>().notNull().default({}),
+    /** Snapshot of the plan this version was built from, so a restore brings back both. */
+    plan: jsonb("plan"),
     messageId: text("message_id"),
     createdAt: createdAt(),
   },

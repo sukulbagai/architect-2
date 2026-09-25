@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import { LayoutTemplate, Sparkles } from "lucide-react";
 import { GithubGlyph } from "@/components/auth/brand-icons";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { ConsultantDialog } from "@/components/home/consultant-dialog";
 
 const OPTIONS = [
   {
@@ -26,19 +28,26 @@ const OPTIONS = [
   },
 ] as const;
 
-export function StartOptions({ className }: { className?: string }) {
+export function StartOptions({ className, role }: { className?: string; role: string | null }) {
+  const [consultant, setConsultant] = useState(false);
+
   function pick(id: (typeof OPTIONS)[number]["id"]) {
     if (id === "template") {
       document.getElementById("templates")?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
-    toast(id === "import" ? "Importing arrives with the GitHub milestone" : "The Consultant arrives with the planning milestone", {
+    if (id === "consultant") {
+      setConsultant(true);
+      return;
+    }
+    toast("Importing arrives with the GitHub milestone", {
       description: "This entry point is in place so the flow is visible now.",
     });
   }
 
   return (
     <div className={cn("grid gap-2 sm:grid-cols-3", className)}>
+      <ConsultantDialog open={consultant} onOpenChange={setConsultant} role={role} />
       <p className="annotation sm:col-span-3">Or start another way</p>
       {OPTIONS.map(({ id, icon: Icon, title, body }) => (
         <button

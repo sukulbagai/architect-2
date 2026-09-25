@@ -29,11 +29,23 @@ the database, which runs on free tiers.
    `DATABASE_URL` (free plan, no card).
 3. Deploy. `pnpm build` applies migrations to Neon before `next build`.
 
+### How the simulation works
+
+`src/lib/sim/` is a small, deterministic engine that stands in for the model:
+
+- **Blueprints** (`catalog.ts`): ten app types with pages, agents, sample data, clarifying questions and scripted agent outputs. Prompts that match no blueprint get a generic one shaped from the prompt itself (`plan.ts`).
+- **Plans** (`plan.ts`): answers to the clarifying questions shape the plan; chat messages in the planning stage edit it.
+- **Code** (`codegen.ts`): the plan becomes a React + Vite, Next.js or FastAPI + React project. Output is deterministic, so version diffs show exactly what a change touched.
+- **Builds** (`script.ts`): a timed script the Workspace plays back: steps tick, files stream into the Code tab, and the preview switches on after the first screen.
+- **Edits** (`edit.ts`): recognised requests (theme, pages, agents, fields, search, banner, name, suggested next steps) change the plan and produce a new version.
+- **Preview** (`src/components/preview`): the generated app, rendered from its plan inside a sandboxed frame, with working tables, drawers, chat, run pipelines and settings.
+
 ## Stack
 
 - Next.js 16 (App Router, Turbopack) and TypeScript
 - Tailwind CSS v4, shadcn/ui on Radix, lucide icons, next-themes
 - Drizzle ORM over Neon (production) or PGlite (local)
+- CodeMirror 6 for the code editor, jsdiff for version diffs
 
 ## How it's put together
 
@@ -43,8 +55,10 @@ the database, which runs on free tiers.
 | `src/app/(auth)` | Sign in (simulated) and onboarding |
 | `src/app/(app)` | Signed-in pages that share the left rail: Home, Projects, Agents, Explore, Integrations, Usage, Settings |
 | `src/app/p/[id]` | The project Workspace |
+| `src/app/p/[id]/preview` | The generated app, rendered from a version's plan |
+| `src/lib/sim` | The simulation engine (see above) |
 | `src/db` | Schema and the Neon/PGlite client |
-| `src/lib/actions` | Server actions (auth, workspace, projects) |
+| `src/lib/actions` | Server actions (auth, workspace, projects, build) |
 | `src/proxy.ts` | Redirects signed-out visitors away from app routes |
 
 ### Identity without sign-in
@@ -61,8 +75,8 @@ Light/dark/system is independent of Simple/Pro. Design tokens live in `src/app/g
 | Milestone | Scope | State |
 | --- | --- | --- |
 | 1. Foundation | Design system, app shell, database, sign-in, onboarding, Home, Projects | Done |
-| 2. Plan and build | Simulated planning, streamed builds, live preview, code tab, versions | Next |
-| 3. Iterate | Diff review, fix-it, visual edits, command palette | |
+| 2. Plan and build | Simulated planning, streamed builds, live preview, code tab, versions, the Consultant | Done |
+| 3. Iterate | Diff review, fix-it, visual edits, command palette | Next |
 | 4. Agents | Agents panel, frameworks, test console, runtime | |
 | 5. GitHub | Simulated connect, import, push, branches | |
 | 6. Ship | Deploys, live URLs, rollback, env vars, usage | |
