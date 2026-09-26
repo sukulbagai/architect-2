@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Database, Eye, History, RotateCcw, Trash2 } from "lucide-react";
+import { ChevronDown, CloudCheck, CloudUpload, Database, Eye, GitBranch, History, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/format";
@@ -27,6 +27,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { formatValue } from "@/components/preview/bits";
+import { GithubGlyph } from "@/components/auth/brand-icons";
+import { ShaChip, SimulatedLink, Visibility } from "@/components/github/github-bits";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { PlanField, Row } from "@/lib/sim/types";
 import { DiffView } from "./diff-view";
 import type { Workspace } from "./use-workspace";
@@ -35,7 +38,10 @@ import type { Workspace } from "./use-workspace";
 // Versions
 
 export function VersionsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
-  const list = [...ws.versions].sort((a, b) => b.number - a.number);
+  // Linked to a repo, the history is the current branch's commits; otherwise every version.
+  const list = [...ws.branchVersions].reverse();
+  const branch = ws.repo?.branches[ws.repo.branch];
+  const pushed = new Set(branch ? branch.commits.slice(0, branch.pushed) : []);
   const [open, setOpen] = useState<string | null>(list[0]?.id ?? null);
   const [file, setFile] = useState<Record<string, string>>({});
 
@@ -54,6 +60,19 @@ export function VersionsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) 
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
+      {ws.repo && (
+        <p className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <GitBranch className="size-3.5" />
+          <span>
+            On <span className="font-mono text-foreground">{ws.repo.branch}</span> · {list.length} {list.length === 1 ? "commit" : "commits"}
+          </span>
+          {ws.git && ws.git.ahead > 0 && (
+            <span className="text-warning">
+              · {ws.git.ahead} not pushed yet
+            </span>
+          )}
+        </p>
+      )}
       <ol className="relative space-y-3 before:absolute before:top-3 before:bottom-3 before:left-[15px] before:w-px before:bg-border">
         {list.map((v, i) => {
           const prev = list[i + 1];
@@ -82,8 +101,22 @@ export function VersionsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) 
                     <p className="flex items-center gap-2 text-sm font-medium">
                       <span className="font-mono text-xs text-muted-foreground">v{v.number}</span>
                       <span className="truncate">{v.summary}</span>
-                      {current && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-medium text-brand-text">Current</span>}
+                      {current && <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-medium text-brand-text">Current</span>}
                     </p>
+                    {ws.repo && (
+                      <p className="mt-0.5 flex items-center gap-1.5">
+                        <ShaChip versionId={v.id} />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground" tabIndex={0}>
+                              {pushed.has(v.id) ? <CloudCheck className="size-3.5" /> : <CloudUpload className="size-3.5 text-warning" />}
+                              {pushed.has(v.id) ? "Pushed" : "Local"}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>{pushed.has(v.id) ? `On GitHub in ${ws.repo.owner}/${ws.repo.name}` : "Only in Architect until you push"}</TooltipContent>
+                        </Tooltip>
+                      </p>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       {timeAgo(v.createdAt)}
                       {isPro && prev && ` · ${changes.length} ${changes.length === 1 ? "file" : "files"} changed`}
@@ -244,7 +277,7 @@ function DataCell({ field, row }: { field: PlanField; row: Row }) {
 // ---------------------------------------------------------------------------------------------
 // Settings
 
-export function SettingsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
+export function SettingsPanel({ ws, isPro, onOpenGithub, onConnectGithub }: { ws: Workspace; isPro: boolean; onOpenGithub: () => void; onConnectGithub: () => void }) {
   const router = useRouter();
   const [name, setName] = useState(ws.project.name);
   const [pending, startTransition] = useTransition();
@@ -297,8 +330,14 @@ export function SettingsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) 
             </div>
           )}
         </dl>
-        <p className="mt-4 text-xs text-muted-foreground">Environment variables, the custom domain and GitHub settings arrive with the Ship and GitHub milestones.</p>
+        <p className="mt-4 text-xs text-muted-foreground">
+          {ws.settings.import?.envVars.length
+            ? `${ws.settings.import.envVars.length} environment ${ws.settings.import.envVars.length === 1 ? "variable" : "variables"} came with the import (${ws.settings.import.envVars.join(", ")}). Editing them and the custom domain arrive with the Ship milestone.`
+            : "Environment variables and the custom domain arrive with the Ship milestone."}
+        </p>
       </section>
+
+      <GithubSettings ws={ws} isPro={isPro} onOpen={onOpenGithub} onConnect={onConnectGithub} />
 
       <section className="rounded-xl border border-border bg-card p-5 shadow-card">
         <h3 className="text-sm font-semibold">Changes</h3>
@@ -356,6 +395,94 @@ export function SettingsPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) 
         </AlertDialog>
       </section>
     </div>
+  );
+}
+
+function GithubSettings({ ws, isPro, onOpen, onConnect }: { ws: Workspace; isPro: boolean; onOpen: () => void; onConnect: () => void }) {
+  const repo = ws.repo;
+  const [confirm, setConfirm] = useState(false);
+  return (
+    <section className="rounded-xl border border-border bg-card p-5 shadow-card">
+      <h3 className="flex items-center gap-2 text-sm font-semibold">
+        <GithubGlyph className="size-4" />
+        GitHub
+      </h3>
+      {!repo ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <p className="max-w-sm text-sm text-muted-foreground">
+            {ws.githubLogin ? `Connected as @${ws.githubLogin}. Link a repository and every version becomes a commit.` : "Keep this project in a repository you own. Every version becomes a commit."}
+          </p>
+          <Button variant="outline" onClick={ws.githubLogin ? onOpen : onConnect}>
+            {ws.githubLogin ? "Link repository" : "Connect GitHub"}
+          </Button>
+        </div>
+      ) : (
+        <>
+          <dl className="mt-4 grid grid-cols-2 gap-4 text-sm">
+            <div className="col-span-2 min-w-0">
+              <dt className="annotation">Repository</dt>
+              <dd className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
+                <span className="truncate font-medium">
+                  {repo.owner}/{repo.name}
+                </span>
+                <SimulatedLink text={repo.url} />
+              </dd>
+            </div>
+            <div>
+              <dt className="annotation">Visibility</dt>
+              <dd className="mt-1">
+                <Visibility isPrivate={repo.private} />
+              </dd>
+            </div>
+            <div>
+              <dt className="annotation">{isPro ? "Default branch" : "Branch"}</dt>
+              <dd className="mt-1 font-mono text-xs">{isPro ? repo.defaultBranch : repo.branch}</dd>
+            </div>
+          </dl>
+          {!ws.githubLogin && (
+            <p className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">
+              GitHub is disconnected, so nothing syncs until you reconnect.
+              <Button size="xs" variant="outline" onClick={onConnect}>
+                Reconnect
+              </Button>
+            </p>
+          )}
+          <div className="mt-4 divide-y divide-border border-t border-border">
+            <SettingRow
+              id="ps-auto"
+              title="Auto-commit"
+              body="Push every change to GitHub as soon as it's saved. Turn it off to group changes and push when you choose."
+              checked={repo.autoCommit}
+              onChange={(v) => void ws.setAutoCommit(v)}
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={onOpen}>
+              Open GitHub panel
+            </Button>
+            <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" onClick={() => setConfirm(true)}>
+              Unlink repository
+            </Button>
+          </div>
+          <AlertDialog open={confirm} onOpenChange={setConfirm}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Unlink {repo.owner}/{repo.name}?
+                </AlertDialogTitle>
+                <AlertDialogDescription>New versions stop syncing. Nothing on GitHub is deleted, and every version stays in this project.</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => void ws.unlinkRepo()}>
+                  Unlink
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      )}
+    </section>
   );
 }
 

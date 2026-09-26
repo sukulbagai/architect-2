@@ -36,9 +36,9 @@ The central design idea: **one project, two depths.** *Simple* mode shows the ap
 
 ---
 
-## 3. Current state (milestones 1 to 4 are done)
+## 3. Current state (milestones 1 to 5 are done)
 
-Commits on `main`: `784b02c` (M1), `4f94b6b` (M2), `0ed2d7b` (M3). M4 is built on top (see below).
+Commits on `main`: `784b02c` (M1), `4f94b6b` (M2), `0ed2d7b` (M3), `7153643` (M4). M5 is built on top (see below).
 
 **Milestone 1, foundation:**
 - **Design and shell:** design tokens (light "drafting paper" / dark "night desk"), fonts (Geist, Geist Mono, Instrument Serif), logo, and an app shell with a collapsible rail (its state lives in a cookie), recent projects, theme switcher and user menu with the Simple/Pro switch.
@@ -77,22 +77,24 @@ Commits on `main`: `784b02c` (M1), `4f94b6b` (M2), `0ed2d7b` (M3). M4 is built o
 - **Home composer:** + → Add existing agents lists standalone agents; picks show as chips and are snapshotted into `settings.attachedAgents`, which `buildPlan` appends to the plan (with a note).
 - **⌘K:** "Open an agent…" in the Workspace.
 
+**Milestone 5, GitHub and import (all simulated):**
+- **Account:** `connectGithub()` / `disconnectGithub()` in `actions/github.ts`. The login is a slug of the workspace name (`githubLoginFor`, "Alex Rivera" → `alex-rivera`), stored in `workspaces.githubLogin` plus a `connections` row (`integrationId: "github"`, account `@login`). Disconnecting through the generic `disconnect()` also clears the login. `components/github/connect-github-dialog.tsx` is the one consent screen (Authorize / Cancel → "Connecting…" → "Connected as @login"), used from onboarding step 3, Integrations, the Settings page, the Workspace chip and sheet, the import page and the agent editor's GitHub tool. The Workspace's `addConnection` sets the login when the connection is GitHub.
+- **Repo universe (`sim/github.ts`, pure):** `reposFor(login)` returns eight repos (support-bot, marketing-site, crm-lovable-export, invoice-api, agent-playground, docs-site, mobile-app, data-notebooks), each with a `RepoProfile` (framework, language, files, routes, models, envVars, agents, previewable, importable, reason, notes, stack, manifest). `resolveImport(source, login)` turns a GitHub pick, a Git URL (`parseGitUrl`: https or ssh; unknown repos get `genericProfile()`, Vite + React, 24 files) or a ZIP (name and size only) into what the scan shows. `scanSteps()` is the ~4 s scan script. `ENV_HELP` / `demoValue()` back the env form.
+- **Import (`/import`, `components/import/import-flow.tsx`):** Source (GitHub / Git URL / ZIP tabs, the Lovable/v0/Bolt hint) → Branch → Analysis (streamed lines, then the facts, a verdict: Ready to preview / Code only / Can't import) → Environment (masked inputs, "Where do I find this?", "Fill with placeholders", Skip for now / Save) → Ready → **Open in Architect**. Deep links: `/import?repo=support-bot`, `/import?tab=url|zip`. Entry points: Home "Import a repo", Projects header "Import", the Projects empty state, ⌘K "Import a repository", Integrations "Import one". `importRepository()` creates the project (`source: "import"`, `stage: "ready"`, `settings.import`), v1 = generated files plus the repo's own files (`sim/repo-files.ts`) kept as `plan.fileOverrides` (their `.env.example` gains the generated agents' keys), the plan from `planFromRepo()` (`sim/import.ts`: pages from routes, collections from models with sample rows, agents from the repo or one Assistant, theme studio, three `applyEdit`-able suggestions), an assistant message of kind `import`, and encrypted `env_vars` rows (`lib/secrets.ts`, AES-256-GCM keyed by `ARCHITECT_SECRET` or a dev key). Imports from your own GitHub are linked straight away; Git URL and ZIP imports aren't. Non-previewable imports show a "can't preview here" state with **Open the code** (which reveals the Code tab in Simple too).
+- **Linked repo (`projects.repo`, `ProjectRepo`):** `{ owner, name, url, private, description, origin: created|linked|imported, branch, defaultBranch, autoCommit, branches: Record<name, { commits: versionIds[], pushed: n, published, pushedAt, remoteOnly? }>, prs, nextPr, linkedAt, teammate: { at, pulled, n } }`. Everything else is derived by `repoStatus(repo, now)`: `ahead`, `behind`, `lastPushedVersionId`, `unpushed`, `openPr`. `commitSha(versionId)` is every version's sha. Every new version is a commit on the current branch (`repoAfter()` in `lib/project-store.ts`, called from `completeBuild`, `saveEditVersion` and `restoreVersion`); with auto-commit it's pushed at once unless the remote has an unpulled change. Every action that lands a version returns `repo`, and the client's `addVersion(version, repo)` applies it (and flickers "Pushing…" on the chip).
+- **Workspace:** the top-bar `SyncChip` (Connect GitHub / Link repository / `main · synced 2m ago` / `2 to push` / `1 to pull` / `not pushed` / Pushing… / Reconnect GitHub) opens the `GithubSheet`: link a new repo (name taken → inline error and a `name-2` suggestion) or an existing one (pushed to a new `architect/<slug>` branch; the repo's `main` is `remoteOnly` until a PR merges into it), with "Creating → Pushing N files → Done" progress; then Sync (Push / Pull / Publish branch, auto-commit switch, Pro "Simulate a teammate pushing"), History on the branch, and in Pro Branches (switch, New branch) and Pull requests (Open PR prefilled from the branch's commits, Merge, Close; the `github.com/…/pull/N` address is copyable text with a "Simulated in this demo" tooltip). Merging switches you to the base branch; if the base moved on, the merge commit is `mergePlans(fork, base, head)`, a structural three-way merge. Pulling saves "Merged 1 commit from origin/main: Update README" (a README override). Versions tab: the current branch's commits with sha chips and Pushed/Local. Code tab (Pro): M/A/D marks since the last push and a Push bar. Settings tab: a GitHub section (repo, visibility, default branch, auto-commit, Open GitHub panel, Unlink). Terminal: `git status|log|branch|push|pull|switch [-c]|checkout [-b]|remote -v` read the repo and run the real action (`TermResult.effect`). ⌘K: Connect GitHub / Open the GitHub panel / Push / Pull / Switch branch….
+- **Shared server helpers** now live in `lib/project-store.ts` (server-only, not `"use server"`): `owned`, `addMessage`, `saveEditVersion`, `currentFiles`, `recordUsage`, `planOf`, `repoAfter`, `ClientMessage`/`ClientVersion`/`EditData`. `actions/build.ts` re-exports the types.
+
 **Still placeholders.** Each is a `toast()` or a note that its milestone must replace:
 
 | Where | What it says | Replaced in |
 | --- | --- | --- |
-| `src/components/workspace/workspace.tsx` GitHub button | "GitHub sync arrives in the GitHub milestone" | M5 |
 | `src/components/workspace/workspace.tsx` Share button | "Sharing arrives in a later milestone" | M7 |
 | `src/components/workspace/workspace.tsx` Deploy button | "Deploying arrives in the Ship milestone" | M6 |
 | `src/components/workspace/chat-composer.tsx` `/deploy` | same toast | M6 |
 | `src/lib/sim/terminal.ts` `architect deploy` | "Deploying from the terminal arrives with the Ship milestone" | M6 |
-| `src/lib/sim/terminal.ts` `git status` / `git branch` | always "main", "working tree clean" | M5 |
-| `src/components/home/start-options.tsx` Import a repo | "Importing arrives with the GitHub milestone" | M5 |
-| `src/components/auth/onboarding.tsx` Connect GitHub | "GitHub connects in the GitHub milestone" | M5 |
-| `src/components/settings/integration-grid.tsx` GitHub card Connect | "GitHub connects in the GitHub milestone" | M5 |
-| `src/components/agents/tools-section.tsx` GitHub tool "Connect" | same toast (the tool stays on; agents like the code reviewer use it) | M5 |
 | `src/components/workspace/stage-panels.tsx` DataPanel footer | "…query console … later milestone" | M7 |
-| `src/components/workspace/stage-panels.tsx` SettingsPanel note | "Environment variables, the custom domain and GitHub settings arrive…" | M5/M6 |
+| `src/components/workspace/stage-panels.tsx` SettingsPanel note | "Environment variables and the custom domain arrive with the Ship milestone" (lists imported env keys) | M6 |
 | `src/app/(app)/usage/page.tsx` | static zero tiles | M6 |
 | `src/lib/format.ts` comment | "Until Claude names projects (milestone 2)…" | Leave it; naming stays heuristic |
 
@@ -130,6 +132,7 @@ src/
     p/[id]/page.tsx             Workspace (server): loads project, messages, versions, connections → <Workspace/>;
                                 reads ?tab= and ?agent= for deep links
     (app)/agents, agents/new, agents/[id]   Agents library, New agent wizard, standalone agent page
+    (app)/import                Import a project (GitHub repo, Git URL, ZIP): ?repo= and ?tab= deep links
     api/agents/[projectId]/[agentId]/run    Test-console runs (cookie)
     api/v1/agents/[agentId]/run             Public agent API (Bearer key)
     embed/agent/[id]            Public chat widget (not in the proxy matcher)
@@ -148,7 +151,12 @@ src/
     actions/projects.ts         createProject, rename/duplicate/delete, listProjects (for ⌘K)
     actions/build.ts            (also) saveAgent, saveAgentTests for plan agents
     actions/agents.ts           standalone agents: create, save, tests, publish, API keys, widget, test runs
-    actions/connections.ts      connectIntegration, addMcpServer, addHttpTool, disconnect
+    actions/connections.ts      connectIntegration, addMcpServer, addHttpTool, disconnect (clears the GitHub login too)
+    actions/github.ts           connectGithub, disconnectGithub, linkRepository, unlinkRepository, pushRepository,
+                                pullRepository, setAutoCommit, simulateTeammatePush, createBranch, switchBranch,
+                                openPullRequest, mergePullRequest, closePullRequest, importRepository
+    project-store.ts            server-only helpers shared by build and GitHub actions (owned, saveEditVersion, repoAfter…)
+    secrets.ts                  server-only AES-256-GCM encrypt/decrypt/mask for env var values
     actions/embed.ts            runWidget (public, published agents only)
     agent-store.ts              server-only: agentInput (zod), rowToPlanAgent, toConnectionView, key hashing, usageSeries
     integrations.ts             catalog with consent scopes, mcpTools(url), ConnectionView
@@ -166,6 +174,10 @@ src/
                                 agent-flow (xyflow), save-bar, new-agent-wizard, standalone-agent, widget-chat,
                                 embed-chat, agent-bits (AgentAvatar, FrameworkChip)
     integrations/               connect-dialog (simulated OAuth consent), custom-tool-dialog (MCP server / HTTP tool)
+    github/                     connect-github-dialog, github-sheet (link, sync, history, branches, PRs), sync-chip,
+                                repo-list (searchable, disabled rows with a reason), github-bits (LanguageDot,
+                                Visibility, ShaChip, SimulatedLink)
+    import/import-flow.tsx      The /import journey
     common/                     PageHeader/PageContainer, EmptyState, ProjectThumb (generated wireframe),
                                 StatusBadge/StatusDot, ThemeSwitcher
     brand/                      Logo/LogoMark, WorkspaceAvatar
@@ -195,7 +207,9 @@ src/
       pages.tsx                 Page kinds: Dashboard, ListPage, Workbench, ChatPage, RunPage, SettingsPage
       bits.tsx                  Pill, Avatar, FieldValue, formatValue, useTyping, AgentAnswer, PageIcon
 scripts/migrate.ts              Neon migrations at build time
-drizzle/                        SQL migrations (0000_init, 0001_version_plan, 0002_agents_connections)
+drizzle/                        SQL migrations (0000_init, 0001_version_plan, 0002_agents_connections). M5 needed none:
+                                repo, settings.import and the new message kind are JSON/text
+src/hooks/use-now.ts            A shared 30 s clock for relative times (null on the server, so no hydration mismatch)
 ```
 
 ---
@@ -204,17 +218,17 @@ drizzle/                        SQL migrations (0000_init, 0001_version_plan, 00
 
 | Table | Key columns | Notes |
 | --- | --- | --- |
-| `workspaces` | id (= cookie value, 32 chars), name, email, signInMethod, role, mode `simple\|pro`, avatarHue, **githubLogin** (unused, for M5), onboardedAt | |
-| `projects` | id (10-char, used in URLs), workspaceId, name, slug (unique), prompt, status `draft\|building\|live\|error`, stage `plan\|build\|ready`, source `prompt\|template\|import`, stack, settings (ProjectSettings JSON), plan (Plan JSON), **repo** (`{owner,name,branch}\|null`, unused, for M5), currentVersionId, lastOpenedAt | |
+| `workspaces` | id (= cookie value, 32 chars), name, email, signInMethod, role, mode `simple\|pro`, avatarHue, **githubLogin** (set while GitHub is connected), onboardedAt | |
+| `projects` | id (10-char, used in URLs), workspaceId, name, slug (unique), prompt, status `draft\|building\|live\|error`, stage `plan\|build\|ready`, source `prompt\|template\|import`, stack, settings (ProjectSettings JSON), plan (Plan JSON), **repo** (`ProjectRepo \| null`, see §3 M5), currentVersionId, lastOpenedAt | |
 | `messages` | projectId, role `user\|assistant\|system`, kind (MessageKind), content, data JSON | see message kinds below |
 | `versions` | projectId, number, summary, files (`Record<path,string>`), plan (snapshot) | a new row for every build, edit, hand edit or restore |
 | `agents` | workspaceId, projectId (always null so far), name, role, framework (id), model, instructions, tools, knowledge, **published**, **apiKeyHash**, **apiKeyPrefix**, **apiKeyCreatedAt**, **widget** `{color, greeting, position}`, **config** (`AgentConfig`: memory, guardrails, tests, samples, trace, prompt), **runs** (real API/widget calls) | Standalone agents. Plan agents live in `projects.plan` |
-| `connections` | workspaceId, integrationId, kind `oauth\|mcp\|http`, label, config `{scopes, url, tools, headerHint, account}` | Simulated connections. Unique (workspace, integration) for `oauth` only (partial index). M5 adds GitHub here |
+| `connections` | workspaceId, integrationId, kind `oauth\|mcp\|http`, label, config `{scopes, url, tools, headerHint, account}` | Simulated connections. Unique (workspace, integration) for `oauth` only (partial index). GitHub is `integrationId: "github"`, account `@login` |
 | `deployments` | projectId, versionId, slug, environment, status, logs | **unused so far**; M6 |
-| `env_vars` | projectId, key, valueEncrypted | **unused so far**; M6 (M5 import may write) |
+| `env_vars` | projectId, key, valueEncrypted | Written by import (`lib/secrets.ts`, AES-256-GCM, `v1:iv:tag:data`). M6 adds the environment column and the editing UI |
 | `usage` | workspaceId, projectId, step, model, input/output/cacheRead tokens, costUsd | written by build actions with simulated numbers; M6 reads it |
 
-`ProjectSettings` = `{ themePreset?, model?, stack?, planFirst?, attachments?[{name,size,kind}], templateId?, reviewChanges?, testAfterChanges?, attachedAgents?: PlanAgent[] }`.
+`ProjectSettings` = `{ themePreset?, model?, stack?, planFirst?, attachments?[{name,size,kind}], templateId?, reviewChanges?, testAfterChanges?, attachedAgents?: PlanAgent[], import?: { source: github|url|zip, from, branch, framework, previewable, reason?, envVars } }`.
 
 `PlanAgent` (in the plan JSON) = `{ id, name, role, framework (id from sim/frameworks.ts; older plans stored the label, and frameworkOf() accepts both), model, tools, instructions, samples, trace?, memory?, guardrails?, handoffs?, knowledge?[{name,size,chunks}], tests?[{id,input,expect}] }`. Tools are display names: built-ins ("Web search"), integration names ("Slack"), `mcp:<label>` and `http:<label>`. `withAgentDefaults()` fills the optional fields. Change it with `setProjectSettings(projectId, patch)`.
 
@@ -229,7 +243,8 @@ drizzle/                        SQL migrations (0000_init, 0001_version_plan, 00
 - `test`: `{ checks, pages, results }` (a `/test` run that found nothing)
 - `chat` (assistant, client-only): `{ help: true }` for the `/help` card (id `local-…`, never saved)
 - `plan-reply`: `{ ideas: string[] }`
-- `event` (system): `{ resumable? }`
+- `event` (system): `{ resumable? }` (also git events: linked, branch created/switched, PR opened/merged, unlinked)
+- `import` (assistant): `ImportSummary` (`sim/import.ts`): repo, branch, source, framework, language, files, routes, models, agents, previewable, reason, envVars `[{key,set}]`, organisation `[{path,about}]`, suggestions
 
 ---
 
@@ -255,7 +270,9 @@ Everything is **deterministic and pure** (the same input gives the same output).
 - `frameworks.ts`: `FRAMEWORK_LIST` (id, label, language, description, packages), `frameworkOf()`, `frameworkLabel()`.
 - `agents.ts`: `GUARDRAILS`, `MEMORY_OPTIONS`, `BUILTIN_TOOLS`, tool helpers (`toolId`, `toolLabel`, `toolIntegration`, `isMcpTool`…), `simulateRun(agent, input, turn, {agents, mcp})` → `{output, trace, usage, handoff}`, `defaultExpect` / `evaluateTest` (the one test rule), `describeAgentChanges` (edit-card sentences, also used for dirty checks), `draftAgent(prompt)` for the wizard, `chunksFor(size)`.
 - `agent-code.ts`: `agentFiles(agent, {appName, agents})`, `agentEntry(agent)`, `agentPackages(plan)`. Kept separate from `codegen.ts` (which re-exports it) so the editor's code preview doesn't pull in the whole generator.
-- `terminal.ts`: `runCommand(input, ctx)` and `complete(input, ctx)`, a pure shell over the current version's files. `codegen.pagePath(plan, page, stack)` says where a page's file lives.
+- `terminal.ts`: `runCommand(input, ctx)` and `complete(input, ctx)`, a pure shell over the current version's files. `ctx.git` carries the linked repo; git commands return an `effect` the terminal view runs. `codegen.pagePath(plan, page, stack)` says where a page's file lives.
+- `github.ts`: the account, the repo universe and every repo operation (`linkRepo`, `commitVersion`, `pushCheck`/`pushBranch`, `pullRemote`, `teammatePush`/`teammateChange`, `createBranch`/`switchBranch`/`switchBlocked`, `openPullRequest`/`prBlocked`/`prDraft`, `canFastForward`/`mergePullRequest`/`forkPoint`/`mergePlans`, `closePullRequest`, `setAutoCommit`), `repoStatus`, `commitSha`, `parseGitUrl`, `resolveImport`, `scanSteps`. Time only enters through the `now` argument (the teammate's change lands at `linkedAt + 2 min`); the Workspace decides on the server whether it had already landed (`teammateArrived` from `arrival()`) and sets a timer for the rest.
+- `import.ts`: `planFromRepo(profile, name, fullName)`, `appNameFor` ("invoice-api" → "Invoice API"), `organisation()`, `importIntro()`, `ImportSummary`. `repo-files.ts`: `repoFiles(resolved)`, the sample files each repo brings (server-side only).
 
 **Extending the simulator:** add pure functions here; add a server action in `src/lib/actions/*` to persist; add client playback in the workspace. Keep outputs deterministic (use `seededRandom(seed)` from `lib/seeded.ts`, never `Math.random()` in anything that must be reproducible or rendered on the server).
 
@@ -345,7 +362,11 @@ Everything is **deterministic and pure** (the same input gives the same output).
 | "Skip planning is a quiet link in the composer" | A "Plan first" switch on the Home composer | A decision made at the moment of starting |
 | Visual edit: "style controls (text, color, spacing)" | Text, Emphasis (default/accent/muted) and Size (S/M/L) | Emphasis and size map cleanly onto every theme; spacing is covered by "compact/roomier" in chat |
 | Stage tabs table has no Review tab | A **Review** tab appears only while a Pro proposal is pending | Review needs room for a file list and a diff |
-| Spec's Workspace sync chip "main · synced" | Not built yet | M5 |
+| Spec's Workspace sync chip "main · synced" | Built (`SyncChip`). The repo keeps per-branch commit lists; `lastPushedVersionId`/`remoteAhead` from the M5 brief are derived by `repoStatus()` rather than stored | Per-branch state stays consistent across switches, merges and pulls |
+| "Link an existing repo" then "the first push follows" | Your project is pushed to a new branch, `architect/<slug>`; the repo's `main` stays untouched (`remoteOnly`) until a pull request merges into it | Pushing unrelated code over someone's main would be destructive |
+| Import links the repo | Only imports from your own GitHub account are linked. Git URL and ZIP imports can be linked later from the chip | A URL may point at someone else's repo; a ZIP has none |
+| Merge "fast-forwards main" | Fast-forward when main hasn't moved; otherwise a merge commit whose plan is a three-way merge (`mergePlans`) | So neither side's change is silently lost |
+| Import "v1 = the repo's files" | v1 = the generated app plus a sample of the repo's own files (5–10, as `fileOverrides`); the scan reports the repo's real size | The demo has no real repo contents to copy |
 
 If you change something the spec describes, update `docs/spec.md` too. If you have the Claude Docs connector, also update the doc, but only when the user asks.
 
@@ -416,6 +437,9 @@ Useful selectors: `#composer-input` (Home), `#chat-input` (Workspace), `role=tab
 - The Next.js route announcer is also `role="alert"`; use `[role="alert"]:not(#__next-route-announcer__)`.
 - Playwright's `Shift+/` sends key `/` with Shift, not `?`. Shortcuts accept both.
 - `break it` in a Build-mode message always plants an issue (hidden trigger for demos and QA). Otherwise one in three page/field edits do, deterministically from the message and version number.
+- **(M5)** While a Sheet or Dialog is open, everything behind it is `aria-hidden`, so `getByRole` can't find the top-bar chip. Use a CSS locator: ``p.locator('button[aria-label^="GitHub:"]')``; its aria-label is "GitHub: main · 2 to push".
+- **(M5)** The composer's Review and Test toggles are `role="switch"`, not buttons.
+- **(M5)** "Simulate a teammate pushing to main" (Pro, in the GitHub sheet) makes the pull state appear at once; otherwise it lands two minutes after linking.
 
 **Every milestone's QA must:**
 1. Run the new flows end to end in **light, dark and at 390×844**, with screenshots. **Look at them.** Design is the top judging criterion.

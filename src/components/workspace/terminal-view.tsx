@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { pagePath } from "@/lib/sim/codegen";
-import { complete, prompt, runCommand, type TermContext, type TermLine, type Tone } from "@/lib/sim/terminal";
+import { complete, prompt, runCommand, type TermContext, type TermEffect, type TermLine, type Tone } from "@/lib/sim/terminal";
+import { switchBlocked } from "@/lib/sim/github";
 import type { Workspace } from "./use-workspace";
 
 const TONE: Record<Tone, string> = {
@@ -34,6 +35,29 @@ export function TerminalView({ ws, user, active }: { ws: Workspace; user: string
   const inputRef = useRef<HTMLInputElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
+  const { repo, git: status, commitSubjects, versions, githubLogin } = ws;
+  const git = useMemo<TermContext["git"]>(() => {
+    if (!repo || !status) return undefined;
+    const byId = new Map(versions.map((v) => [v.id, v]));
+    const b = repo.branches[repo.branch];
+    const pushedCount = b?.pushed ?? 0;
+    return {
+      remote: repo.url,
+      connected: !!githubLogin,
+      branch: repo.branch,
+      defaultBranch: repo.defaultBranch,
+      branches: Object.keys(repo.branches)
+        .sort()
+        .map((name) => ({ name, current: name === repo.branch, remoteOnly: !!repo.branches[name].remoteOnly, switchable: !switchBlocked(repo, name) })),
+      ahead: status.ahead,
+      behind: status.behind,
+      published: status.published,
+      commits: (b?.commits ?? [])
+        .map((id, i) => ({ id, number: byId.get(id)?.number ?? 0, subject: commitSubjects[id] ?? byId.get(id)?.summary ?? "", pushed: i < pushedCount }))
+        .reverse(),
+    };
+  }, [repo, status, commitSubjects, versions, githubLogin]);
+
   const ctx: TermContext = useMemo(() => {
     const plan = ws.plan;
     return {
@@ -46,8 +70,22 @@ export function TerminalView({ ws, user, active }: { ws: Workspace; user: string
       user,
       stack: ws.project.stack,
       cwd,
+      git,
     };
-  }, [ws.plan, ws.currentVersion, ws.issues, ws.versions, ws.currentVersionId, ws.project, user, cwd]);
+  }, [ws.plan, ws.currentVersion, ws.issues, ws.versions, ws.currentVersionId, ws.project, user, cwd, git]);
+
+  const branch = repo?.branch ?? "main";
+  const { pushRepo, pullRepo, switchBranch, newBranch } = ws;
+  /** Push, pull and branch commands really change the project, after their output has printed. */
+  function apply(effect: TermEffect) {
+    if (effect.kind === "push") void pushRepo();
+    else if (effect.kind === "pull") void pullRepo();
+    else if (effect.kind === "switch") void switchBranch(effect.branch);
+    else
+      void newBranch(effect.name).then((res) => {
+        if (!res.ok) setLines((l) => [...l, { id: ++seq, segs: [{ text: `fatal: ${res.error}`, tone: "error" }] }]);
+      });
+  }
 
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
   useEffect(() => {
@@ -61,7 +99,7 @@ export function TerminalView({ ws, user, active }: { ws: Workspace; user: string
     id: ++seq,
     segs: [
       { text: prompt(ctx), tone: "info" },
-      { text: " (main) ", tone: "muted" },
+      { text: ` (${branch}) `, tone: "muted" },
       { text: "$ ", tone: "muted" },
       { text },
     ],
@@ -82,6 +120,7 @@ export function TerminalView({ ws, user, active }: { ws: Workspace; user: string
     // Output streams in (about 15 ms a line, plus any pause a command takes).
     let t = 0;
     const out = res.lines;
+    const effect = res.effect;
     if (out.length === 0) return;
     const slow = out.some((l) => l.wait);
     if (!slow && out.length > 60) {
@@ -97,6 +136,7 @@ export function TerminalView({ ws, user, active }: { ws: Workspace; user: string
           if (i === out.length - 1) {
             setRunning(false);
             inputRef.current?.focus({ preventScroll: true });
+            if (effect) apply(effect);
           }
         }, t),
       );
@@ -176,7 +216,7 @@ export function TerminalView({ ws, user, active }: { ws: Workspace; user: string
       <div className={cn("flex items-center", running && "opacity-0")}>
         <span className="shrink-0 whitespace-pre">
           <span className="text-info">{prompt(ctx)}</span>
-          <span className="text-muted-foreground"> (main) $ </span>
+          <span className="text-muted-foreground"> ({branch}) $ </span>
         </span>
         <label htmlFor="terminal-input" className="sr-only">
           Terminal command

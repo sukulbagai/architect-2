@@ -98,9 +98,14 @@ export function ProjectsView({ projects, isPro }: { projects: ProjectSummary[]; 
         title="No projects yet"
         description="Describe an app on Home, start from a template, or import a GitHub repo. Everything you build lands here."
         action={
-          <Button asChild className="bg-brand text-brand-foreground hover:bg-brand/90">
-            <Link href="/home?new=1">Describe your first app</Link>
-          </Button>
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button asChild className="bg-brand text-brand-foreground hover:bg-brand/90">
+              <Link href="/home?new=1">Describe your first app</Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/import">Import a repo</Link>
+            </Button>
+          </div>
         }
       />
     );
@@ -249,7 +254,7 @@ export function ProjectsView({ projects, isPro }: { projects: ProjectSummary[]; 
                     </td>
                   )}
                   <td className="hidden px-4 py-2.5 text-muted-foreground md:table-cell">
-                    {p.source === "prompt" ? "Prompt" : p.source === "template" ? "Template" : "GitHub repo"}
+                    {p.source === "prompt" ? "Prompt" : p.source === "template" ? "Template" : "Import"}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">{timeAgo(p.updatedAt)}</td>
                   <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>

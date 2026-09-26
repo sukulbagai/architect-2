@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, Plug, Server, Unplug, Webhook } from "lucide-react";
+import { ArrowRight, Check, Plug, Server, Unplug, Webhook } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { timeAgo } from "@/lib/format";
 import { disconnect } from "@/lib/actions/connections";
@@ -20,6 +21,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ConnectDialog, IntegrationTile } from "@/components/integrations/connect-dialog";
 import { CustomToolDialog } from "@/components/integrations/custom-tool-dialog";
+import { ConnectGithubDialog } from "@/components/github/connect-github-dialog";
+import { reposFor } from "@/lib/sim/github";
 
 const ORDER: IntegrationCategory[] = ["Code & deploy", "Communication", "Workspace", "CRM & data", "Custom"];
 
@@ -31,20 +34,22 @@ function hostOf(url?: string) {
   }
 }
 
-export function IntegrationGrid({ integrations, connections: initial, account }: { integrations: Integration[]; connections: ConnectionView[]; account: string }) {
+export function IntegrationGrid({ integrations, connections: initial, account, name }: { integrations: Integration[]; connections: ConnectionView[]; account: string; name: string }) {
   const [connections, setConnections] = useState(initial);
   const [connecting, setConnecting] = useState<Integration | null>(null);
+  const [github, setGithub] = useState(false);
   const [custom, setCustom] = useState<"mcp" | "http" | null>(null);
   const [removing, setRemoving] = useState<ConnectionView | null>(null);
   const [, startTransition] = useTransition();
   const mounted = useMounted();
 
   const byIntegration = new Set(connections.filter((c) => c.kind === "oauth").map((c) => c.integrationId));
+  const githubLogin = connections.find((c) => c.integrationId === "github")?.account.replace(/^@/, "") ?? null;
   const added = (c: ConnectionView) => setConnections((list) => [c, ...list.filter((x) => x.id !== c.id)]);
 
   function open(i: Integration) {
     if (i.id === "github") {
-      toast("GitHub connects in the GitHub milestone", { description: "Repo import, sync and pull requests arrive together." });
+      setGithub(true);
       return;
     }
     if (i.id === "mcp") setCustom("mcp");
@@ -140,6 +145,17 @@ export function IntegrationGrid({ integrations, connections: initial, account }:
                       <p className="text-sm font-medium">{i.name}</p>
                       <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{i.description}</p>
                       {count > 0 && <p className="mt-1 text-[11px] text-subtle-foreground">{count} added</p>}
+                      {i.id === "github" && githubLogin && (
+                        <p className="mt-1.5 flex flex-wrap items-center gap-x-2 text-[11px] text-subtle-foreground">
+                          <span>
+                            <span className="font-mono text-muted-foreground">@{githubLogin}</span> · {reposFor(githubLogin).length} repositories
+                          </span>
+                          <Link href="/import" className="inline-flex items-center gap-0.5 text-muted-foreground hover:text-foreground">
+                            Import one
+                            <ArrowRight className="size-3" />
+                          </Link>
+                        </p>
+                      )}
                     </div>
                     {isOn ? (
                       <span className="inline-flex h-7 shrink-0 items-center gap-1 px-1 text-xs font-medium text-success">
@@ -160,6 +176,7 @@ export function IntegrationGrid({ integrations, connections: initial, account }:
       })}
 
       <ConnectDialog integration={connecting} account={account} open={!!connecting} onOpenChange={(o) => !o && setConnecting(null)} onConnected={added} />
+      <ConnectGithubDialog open={github} onOpenChange={setGithub} name={name} onConnected={(c) => added(c.connection)} />
       <CustomToolDialog kind={custom ?? "mcp"} open={!!custom} onOpenChange={(o) => !o && setCustom(null)} onConnected={added} />
 
       <AlertDialog open={!!removing} onOpenChange={(o) => !o && setRemoving(null)}>
@@ -167,7 +184,9 @@ export function IntegrationGrid({ integrations, connections: initial, account }:
           <AlertDialogHeader>
             <AlertDialogTitle>Disconnect {removing?.label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Agents that use it keep the tool switched on, but show a warning until you connect it again.
+              {removing?.integrationId === "github"
+                ? "Projects stay linked to their repositories but stop syncing, and imports need GitHub again. Reconnect any time."
+                : "Agents that use it keep the tool switched on, but show a warning until you connect it again."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

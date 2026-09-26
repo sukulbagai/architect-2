@@ -8,6 +8,7 @@ import {
   Bot,
   ChevronRight,
   Compass,
+  FolderInput,
   FolderKanban,
   Gauge,
   House,
@@ -150,6 +151,7 @@ export function CommandPalette({
       items: [
         { id: "create-project", label: "New project", icon: Plus, run: go("/home?new=1"), keywords: ["create", "start"] },
         { id: "create-template", label: "Start from a template", icon: LayoutTemplate, run: go("/explore"), keywords: ["template", "gallery"] },
+        { id: "create-import", label: "Import a repository", icon: FolderInput, run: go("/import"), keywords: ["github", "git", "zip", "url", "repo", "existing"] },
         { id: "create-consultant", label: "Ask the Consultant", icon: Sparkles, run: go("/home?consultant=1"), keywords: ["ideas", "help", "what to build"] },
       ],
     });

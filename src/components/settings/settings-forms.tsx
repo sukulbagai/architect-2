@@ -7,6 +7,10 @@ import { cn } from "@/lib/utils";
 import { ROLES } from "@/lib/constants";
 import { deleteWorkspace, updateProfile } from "@/lib/actions/workspace";
 import { signOut } from "@/lib/actions/auth";
+import { disconnectGithub } from "@/lib/actions/github";
+import { reposFor } from "@/lib/sim/github";
+import { GithubGlyph } from "@/components/auth/brand-icons";
+import { ConnectGithubDialog } from "@/components/github/connect-github-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,9 +44,11 @@ function Section({ title, description, children }: { title: string; description:
 export function SettingsForms({
   profile,
   mode: initialMode,
+  githubLogin,
 }: {
   profile: { name: string; email: string; role: string | null };
   mode: Mode;
+  githubLogin: string | null;
 }) {
   const [name, setName] = useState(profile.name);
   const [email, setEmail] = useState(profile.email);
@@ -133,6 +139,10 @@ export function SettingsForms({
         </div>
       </Section>
 
+      <Section title="GitHub" description="Import repositories and keep projects in sync. Simulated: nothing is sent to GitHub.">
+        <GithubRow name={profile.name} initialLogin={githubLogin} />
+      </Section>
+
       <Section title="Appearance" description="Light, dark, or follow your system. Separate from Simple and Pro.">
         <ThemeSwitcher size="md" />
       </Section>
@@ -164,6 +174,72 @@ export function SettingsForms({
           </AlertDialog>
         </div>
       </Section>
+    </div>
+  );
+}
+
+function GithubRow({ name, initialLogin }: { name: string; initialLogin: string | null }) {
+  const [login, setLogin] = useState(initialLogin);
+  const [connecting, setConnecting] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [pending, startTransition] = useTransition();
+  return (
+    <div className="flex max-w-xl items-center gap-3 rounded-xl border border-border bg-card p-4 shadow-card">
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-foreground text-background">
+        <GithubGlyph className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        {login ? (
+          <>
+            <p className="text-sm font-medium">
+              Connected as <span className="font-mono">@{login}</span>
+            </p>
+            <p className="text-xs text-muted-foreground">{reposFor(login).length} repositories</p>
+          </>
+        ) : (
+          <>
+            <p className="text-sm font-medium">Not connected</p>
+            <p className="text-xs text-muted-foreground">Connect to import repos and sync projects.</p>
+          </>
+        )}
+      </div>
+      {login ? (
+        <Button variant="outline" size="sm" disabled={pending} onClick={() => setConfirm(true)}>
+          Disconnect
+        </Button>
+      ) : (
+        <Button variant="outline" size="sm" onClick={() => setConnecting(true)}>
+          Connect
+        </Button>
+      )}
+      <ConnectGithubDialog open={connecting} onOpenChange={setConnecting} name={name} onConnected={(c) => setLogin(c.login)} />
+      <AlertDialog open={confirm} onOpenChange={setConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disconnect GitHub?</AlertDialogTitle>
+            <AlertDialogDescription>Projects stay linked to their repositories but stop syncing until you reconnect. Nothing on GitHub is deleted.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() =>
+                startTransition(async () => {
+                  try {
+                    await disconnectGithub();
+                    setLogin(null);
+                    toast.success("Disconnected GitHub");
+                  } catch {
+                    toast.error("Couldn't disconnect GitHub");
+                  }
+                })
+              }
+            >
+              Disconnect
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

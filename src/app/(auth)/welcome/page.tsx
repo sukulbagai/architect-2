@@ -19,7 +19,7 @@ export default async function WelcomePage() {
         </Link>
       </header>
       <main className="relative flex flex-1 justify-center px-6 pt-6 pb-16 sm:pt-12">
-        <Onboarding initialName={ws.name} initialRole={ws.role} initialMode={ws.mode} />
+        <Onboarding initialName={ws.name} initialRole={ws.role} initialMode={ws.mode} githubLogin={ws.githubLogin} />
       </main>
     </div>
   );

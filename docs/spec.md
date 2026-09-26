@@ -188,7 +188,7 @@ flowchart LR
 ### 8. GitHub
 
 1. The GitHub button in the Workspace top bar starts OAuth if you aren't connected yet.
-2. The user creates a new repo (name, private or public) or links an existing one. The first push follows.
+2. The user creates a new repo (name, private or public) or links an existing one. The first push follows. Linking a repo that already has code puts the project on its own branch, so that repo's main stays untouched until a pull request merges it.
 3. After that, the top bar shows sync status, for example "main · synced 2m ago". Auto-commit is on by default in Simple. Pro defaults to commits written from the diff review.
 4. The panel has a branch switcher, Pull, Push, and **Open PR**, which turns the latest change into a pull request.
 

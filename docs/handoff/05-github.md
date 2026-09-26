@@ -1,5 +1,7 @@
 # Milestone 5: GitHub and import
 
+> **Status: built.** What exists, and where it differs from this brief, is in `00-context.md` §3 (Milestone 5) and §11.
+
 > Read `docs/handoff/00-context.md` first. **Nothing here talks to GitHub.** There's no OAuth app, no token and no API call. Connecting, repos, commits, branches, pull requests and imports are all simulated, deterministically, in `src/lib/sim/github.ts`.
 
 **Goal:** developers must feel they own their code. The project lives in "their" repo, changes become commits, and there are branches and pull requests. Builders get auto-sync without having to think about it. Existing projects can be imported and continued in Architect.

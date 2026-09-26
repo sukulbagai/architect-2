@@ -24,6 +24,7 @@ export const config = {
     "/integrations/:path*",
     "/usage/:path*",
     "/settings/:path*",
+    "/import/:path*",
     "/p/:path*",
     "/welcome/:path*",
   ],

@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ConnectDialog, IntegrationTile } from "@/components/integrations/connect-dialog";
 import { CustomToolDialog } from "@/components/integrations/custom-tool-dialog";
-import { toast } from "sonner";
+import { ConnectGithubDialog } from "@/components/github/connect-github-dialog";
 
 const BUILTIN_ICON = { "Web search": Globe, "Knowledge base": BookOpen, "Code interpreter": SquareTerminal } as const;
 
@@ -43,6 +43,7 @@ export function ToolsSection({
 }) {
   const [connecting, setConnecting] = useState<Integration | null>(null);
   const [custom, setCustom] = useState<"mcp" | "http" | null>(null);
+  const [github, setGithub] = useState(false);
 
   const rows: Row[] = BUILTIN_TOOLS.map((b) => ({ tool: b.name, label: b.name, note: b.note, kind: "builtin" as const }));
   const seen = new Set(rows.map((r) => r.tool));
@@ -73,7 +74,7 @@ export function ToolsSection({
 
   function connect(i: Integration) {
     if (i.id === "github") {
-      toast("GitHub connects in the GitHub milestone", { description: "Until then the tool stays switched on, and the agent's code already calls it." });
+      setGithub(true);
       return;
     }
     setConnecting(i);
@@ -167,6 +168,14 @@ export function ToolsSection({
           onConnected(c);
           const name = INTEGRATIONS.find((i) => i.id === c.integrationId)?.name;
           if (name && !tools.includes(name)) onChange([...tools, name]);
+        }}
+      />
+      <ConnectGithubDialog
+        open={github}
+        onOpenChange={setGithub}
+        onConnected={({ connection }) => {
+          onConnected(connection);
+          if (!tools.includes("GitHub")) onChange([...tools, "GitHub"]);
         }}
       />
       <CustomToolDialog

@@ -6,6 +6,7 @@ import { requireWorkspace } from "@/lib/session";
 import { toConnectionView } from "@/lib/agent-store";
 import { Workspace } from "@/components/workspace/workspace";
 import { CommandProvider } from "@/components/command/command-provider";
+import { teammateArrived } from "@/lib/sim/github";
 import type { Plan } from "@/lib/sim/types";
 import type { TabId } from "@/components/workspace/use-workspace";
 
@@ -22,6 +23,7 @@ function arrival(thread: Message[], project: Project, versionCount: number) {
   return {
     freshMessageId: last?.kind === "questions" && now - last.createdAt.getTime() < 8000 ? last.id : null,
     autoBuild: project.stage === "build" && versionCount === 0 && !!project.plan && now - project.updatedAt.getTime() < 60_000,
+    teammateArrived: !!project.repo && teammateArrived(project.repo, now),
   };
 }
 
@@ -56,7 +58,7 @@ export default async function ProjectPage({ params, searchParams }: PageProps<"/
   ]);
   await db.update(projects).set({ lastOpenedAt: new Date() }).where(eq(projects.id, id));
 
-  const { freshMessageId, autoBuild } = arrival(thread, project, history.length);
+  const { freshMessageId, autoBuild, teammateArrived: arrived } = arrival(thread, project, history.length);
   // Deep links from the Agents library: /p/<id>?tab=agents&agent=<agentId>
   const tab = typeof sp.tab === "string" && TABS.includes(sp.tab as TabId) ? (sp.tab as TabId) : null;
   const agent = typeof sp.agent === "string" && (project.plan as Plan | null)?.agents.some((a) => a.id === sp.agent) ? sp.agent : null;
@@ -87,6 +89,9 @@ export default async function ProjectPage({ params, searchParams }: PageProps<"/
         currentVersionId={project.currentVersionId}
         freshMessageId={freshMessageId}
         autoBuild={autoBuild}
+        repo={project.repo ?? null}
+        githubLogin={ws.githubLogin}
+        teammateArrived={arrived}
       />
     </CommandProvider>
   );

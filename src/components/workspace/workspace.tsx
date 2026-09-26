@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AppWindow,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   Bot,
   Code2,
   Database,
@@ -12,6 +14,7 @@ import {
   FileCode2,
   FileText,
   FlaskConical,
+  GitBranch,
   GitCompare,
   Hammer,
   History,
@@ -41,11 +44,15 @@ import type { Mode } from "@/db/schema";
 import type { EditTarget } from "@/lib/sim/visual";
 import type { Plan } from "@/lib/sim/types";
 import type { ConnectionView } from "@/lib/integrations";
+import type { ProjectRepo } from "@/lib/sim/github";
 import { describeAgentChanges } from "@/lib/sim/agents";
 import { LogoMark } from "@/components/brand/logo";
 import { StatusBadge } from "@/components/common/status-badge";
 import { useModeSwitch } from "@/components/shell/app-shell";
 import { GithubGlyph } from "@/components/auth/brand-icons";
+import { ConnectGithubDialog } from "@/components/github/connect-github-dialog";
+import { GithubSheet } from "@/components/github/github-sheet";
+import { SyncChip } from "@/components/github/sync-chip";
 import { useCommandPalette, useRegisterCommands, type CommandItem } from "@/components/command/command-provider";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -102,6 +109,9 @@ export function Workspace(props: {
   connections: ConnectionView[];
   initialTab?: TabId | null;
   initialAgentId?: string | null;
+  repo: ProjectRepo | null;
+  githubLogin: string | null;
+  teammateArrived: boolean;
 }) {
   const router = useRouter();
   const { mode, change } = useModeSwitch(props.mode);
@@ -120,6 +130,8 @@ export function Workspace(props: {
   const [drawerMounted, setDrawerMounted] = useState(false);
   const [selectOn, setSelectOnState] = useState(false);
   const [selectTarget, setSelectTarget] = useState<EditTarget | null>(null);
+  const [githubOpen, setGithubOpen] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
 
   const hasReview = isPro && !!ws.pendingProposal;
@@ -127,11 +139,13 @@ export function Workspace(props: {
     const saved = ws.plan?.agents.find((a) => a.id === id);
     return !!saved && describeAgentChanges(saved, d).length > 0;
   });
-  const hasCode = isPro || showCodeInSimple;
+  // Anything that opens the Code tab in Simple (the "can't preview" state, a file link) reveals it for good.
+  if (!isPro && !showCodeInSimple && ws.tab === "code") setShowCodeInSimple(true);
+  const hasCode = isPro || showCodeInSimple || ws.tab === "code";
   const visibleTabs = TABS.filter((t) => (t.id === "review" ? hasReview : t.id === "code" ? hasCode : true));
   const tab = visibleTabs.some((t) => t.id === ws.tab) ? ws.tab : "preview";
   const previewingOld = !!ws.previewVersionId && ws.previewVersionId !== ws.currentVersionId;
-  const canSelect = ws.project.stage === "ready" && !ws.build && !!ws.currentVersionId && !previewingOld;
+  const canSelect = ws.project.stage === "ready" && !ws.build && !!ws.currentVersionId && !previewingOld && ws.settings.import?.previewable !== false;
   const selecting = selectOn && canSelect && tab === "preview";
 
   const setWsTab = ws.setTab;
@@ -232,7 +246,8 @@ export function Workspace(props: {
   // ⌘K: what this project adds to the command palette
 
   const { issues, pendingProposal, project, plan, previousVersion, versions, currentVersionId, currentVersion, settings } = ws;
-  const { fixIssue, runBuild, setTab, undo, restore, openCode, runTests, updateSettings, openAgent } = ws;
+  const { fixIssue, runBuild, setTab, undo, restore, openCode, runTests, updateSettings, openAgent, repo, git, pushRepo, pullRepo, switchBranch } = ws;
+  const githubLogin = ws.githubLogin;
   const buildNow = project.stage === "plan" && !!plan && !ws.build;
   const suggestions = useMemo<CommandItem[]>(() => {
     const out: CommandItem[] = [];
@@ -311,6 +326,38 @@ export function Workspace(props: {
           { id: "test", label: "Run the testing agent", icon: FlaskConical, run: () => void runTests() },
         ]
       : []),
+    ...(!githubLogin && !repo
+      ? [{ id: "gh-connect", label: "Connect GitHub", icon: GithubGlyph, keywords: ["git", "repo", "sync"], run: () => setConnectOpen(true) }]
+      : [
+          {
+            id: "gh-open",
+            label: repo ? "Open the GitHub panel" : "Link a GitHub repository",
+            icon: GithubGlyph,
+            hint: repo ? `${repo.owner}/${repo.name}` : undefined,
+            keywords: ["git", "repo", "sync", "branch", "pull request"],
+            run: () => setGithubOpen(true),
+          },
+        ]),
+    ...(repo && githubLogin && git?.behind ? [{ id: "gh-pull", label: `Pull from origin/${repo.branch}`, icon: ArrowDownToLine, keywords: ["git", "sync"], run: () => void pullRepo() }] : []),
+    ...(repo && githubLogin && !git?.behind && (git?.ahead || !git?.published)
+      ? [{ id: "gh-push", label: `Push to origin/${repo.branch}`, icon: ArrowUpFromLine, hint: git?.ahead ? `${git.ahead} to push` : undefined, keywords: ["git", "sync", "commit"], run: () => void pushRepo() }]
+      : []),
+    ...(isPro && repo && githubLogin && Object.keys(repo.branches).length > 1
+      ? [
+          {
+            id: "gh-branch",
+            label: "Switch branch…",
+            icon: GitBranch,
+            keywords: ["git", "checkout"],
+            children: {
+              placeholder: "Pick a branch…",
+              items: Object.keys(repo.branches)
+                .filter((b) => b !== repo.branch && !repo.branches[b].remoteOnly && repo.branches[b].commits.length > 0)
+                .map((b) => ({ id: `branch-${b}`, label: b, icon: GitBranch, run: () => void switchBranch(b) })),
+            },
+          },
+        ]
+      : []),
     ...(ready && isPro
       ? [
           {
@@ -327,7 +374,8 @@ export function Workspace(props: {
   const pages = ws.plan?.pages ?? [];
   const currentRoute = pages.find((p) => p.id === route) ?? pages[0];
   const deployable = ws.project.stage === "ready" && !ws.build;
-  const showPreviewTools = tab === "preview" && pages.length > 0 && (ws.currentVersionId || ws.build?.previewReady);
+  const codeOnly = ws.settings.import?.previewable === false;
+  const showPreviewTools = tab === "preview" && pages.length > 0 && !codeOnly && (ws.currentVersionId || ws.build?.previewReady);
 
   return (
     <div className="flex h-dvh flex-col bg-background">
@@ -371,14 +419,7 @@ export function Workspace(props: {
             </TooltipTrigger>
             <TooltipContent>Search and commands</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label="GitHub" onClick={() => toast("GitHub sync arrives in the GitHub milestone")}>
-                <GithubGlyph className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Connect GitHub</TooltipContent>
-          </Tooltip>
+          <SyncChip ws={ws} onClick={() => (ws.githubLogin || ws.repo ? setGithubOpen(true) : setConnectOpen(true))} />
           <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => toast("Sharing arrives in a later milestone")}>
             <Share2 />
             Share
@@ -623,7 +664,7 @@ export function Workspace(props: {
               {tab === "data" && <DataPanel ws={ws} isPro={isPro} />}
               {tab === "code" && <CodePanel ws={ws} isPro={isPro} />}
               {tab === "versions" && <VersionsPanel ws={ws} isPro={isPro} />}
-              {tab === "settings" && <SettingsPanel ws={ws} isPro={isPro} />}
+              {tab === "settings" && <SettingsPanel ws={ws} isPro={isPro} onOpenGithub={() => setGithubOpen(true)} onConnectGithub={() => setConnectOpen(true)} />}
             </div>
           </div>
           {isPro && drawerMounted && (
@@ -641,6 +682,18 @@ export function Workspace(props: {
           )}
         </section>
       </div>
+      <GithubSheet ws={ws} isPro={isPro} open={githubOpen} onOpenChange={setGithubOpen} onConnect={() => setConnectOpen(true)} />
+      <ConnectGithubDialog
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        name={props.user}
+        onConnected={({ login, connection }) => {
+          ws.setGithubLogin(login);
+          ws.addConnection(connection);
+          // Connecting from the chip carries straight on to linking a repository.
+          if (!ws.repo) setGithubOpen(true);
+        }}
+      />
     </div>
   );
 }

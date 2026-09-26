@@ -3,11 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { getDb, type DB } from "@/db";
-import { messages, projects, usage, versions, type Message, type Project, type ProjectSettings, type Version } from "@/db/schema";
-import { requireWorkspace } from "@/lib/session";
+import type { DB } from "@/db";
+import { messages, projects, versions, type Project, type ProjectSettings } from "@/db/schema";
 import { rowId } from "@/lib/ids";
-import { applyPlanInstruction, buildPlan, estimate, matchBlueprint, modelRate, planIdeas } from "@/lib/sim/plan";
+import { applyPlanInstruction, buildPlan, estimate, matchBlueprint, planIdeas } from "@/lib/sim/plan";
 import { generateFiles, pagePath } from "@/lib/sim/codegen";
 import { buildScript, buildSummary, fileChanges } from "@/lib/sim/script";
 import { applyEdit, type EditResult } from "@/lib/sim/edit";
@@ -17,94 +16,26 @@ import { applyVisualChange } from "@/lib/sim/visual-edit";
 import { describeAgentChanges, toolIntegration } from "@/lib/sim/agents";
 import { agentInput, testsInput } from "@/lib/agent-store";
 import type { EditTarget, VisualChange } from "@/lib/sim/visual";
-import type { AgentTest, BuildScript, EditSummary, Issue, Plan, PlanAgent, ProposalData, ProposalFile, TestReport } from "@/lib/sim/types";
+import {
+  addMessage,
+  currentFiles,
+  nextVersionNumber,
+  owned,
+  planOf,
+  recordUsage,
+  repoAfter,
+  saveEditVersion,
+  toClientMessage,
+  toClientVersion,
+  type ClientMessage,
+  type EditData,
+} from "@/lib/project-store";
+import type { AgentTest, BuildScript, Issue, Plan, PlanAgent, ProposalData, ProposalFile, TestReport } from "@/lib/sim/types";
+
+export type { ClientMessage, ClientVersion, EditData } from "@/lib/project-store";
 
 /* Everything here is simulated: plans, builds and edits come from local generators, so nothing
    calls a paid service. Results are saved exactly as a real build would save them. */
-
-export type ClientMessage = Pick<Message, "id" | "role" | "kind" | "content" | "data" | "createdAt">;
-export type ClientVersion = Pick<Version, "id" | "number" | "summary" | "files" | "createdAt"> & { plan: Plan | null };
-
-const toClientMessage = (m: Message): ClientMessage => ({
-  id: m.id,
-  role: m.role,
-  kind: m.kind,
-  content: m.content,
-  data: m.data,
-  createdAt: m.createdAt,
-});
-const toClientVersion = (v: Version): ClientVersion => ({
-  id: v.id,
-  number: v.number,
-  summary: v.summary,
-  files: v.files,
-  createdAt: v.createdAt,
-  plan: (v.plan as Plan | null) ?? null,
-});
-
-async function owned(projectId: string) {
-  const ws = await requireWorkspace();
-  const db = await getDb();
-  const [project] = await db
-    .select()
-    .from(projects)
-    .where(and(eq(projects.id, projectId), eq(projects.workspaceId, ws.id)))
-    .limit(1);
-  if (!project) throw new Error("Project not found");
-  return { db, ws, project };
-}
-
-async function addMessage(db: DB, projectId: string, m: Omit<ClientMessage, "id" | "createdAt">, offsetMs = 0) {
-  const [row] = await db
-    .insert(messages)
-    .values({ id: rowId(), projectId, ...m, createdAt: new Date(Date.now() + offsetMs) })
-    .returning();
-  return toClientMessage(row);
-}
-
-async function nextVersionNumber(db: DB, projectId: string) {
-  const [last] = await db
-    .select({ number: versions.number })
-    .from(versions)
-    .where(eq(versions.projectId, projectId))
-    .orderBy(desc(versions.number))
-    .limit(1);
-  return (last?.number ?? 0) + 1;
-}
-
-async function currentFiles(db: DB, project: Project) {
-  if (!project.currentVersionId) return {};
-  const [v] = await db.select().from(versions).where(eq(versions.id, project.currentVersionId)).limit(1);
-  return v?.files ?? {};
-}
-
-/**
- * Simulated token accounting at Claude Opus 5 list prices ($5 / $25 per million tokens). Sonnet 5
- * costs 0.4× as much, which is what the Pro model chip changes.
- */
-async function recordUsage(db: DB, workspaceId: string, projectId: string, steps: [string, number, number][], model = "claude-opus-5") {
-  if (!steps.length) return;
-  const rate = modelRate(model);
-  await db.insert(usage).values(
-    steps.map(([step, input, output]) => ({
-      id: rowId(),
-      workspaceId,
-      projectId,
-      step,
-      model,
-      inputTokens: input,
-      outputTokens: output,
-      cacheReadTokens: Math.round(input * 0.6),
-      costUsd: (((input * 5 + output * 25) * rate) / 1_000_000).toFixed(5),
-    })),
-  );
-}
-
-function planOf(project: Project): Plan {
-  if (project.plan) return project.plan as Plan;
-  const bp = matchBlueprint(project.prompt, project.settings.templateId, project.name);
-  return { ...buildPlan({ blueprint: bp, appName: project.name, settings: project.settings }), appName: project.name };
-}
 
 // ---------------------------------------------------------------------------------------------
 
@@ -186,6 +117,7 @@ export async function completeBuild(projectId: string, seconds: number) {
     .insert(versions)
     .values({ id: rowId(), projectId, number, summary: number === 1 ? "First build" : "Rebuilt from the plan", files, plan })
     .returning();
+  const linked = repoAfter(project, version.id);
   const message = await addMessage(db, projectId, {
     role: "assistant",
     kind: "build",
@@ -194,7 +126,7 @@ export async function completeBuild(projectId: string, seconds: number) {
   });
   await db
     .update(projects)
-    .set({ stage: "ready", status: "draft", currentVersionId: version.id, updatedAt: new Date() })
+    .set({ stage: "ready", status: "draft", currentVersionId: version.id, ...linked, updatedAt: new Date() })
     .where(eq(projects.id, projectId));
   const tok = Object.values(files).join("").length / 4;
   await recordUsage(db, ws.id, projectId, [
@@ -204,7 +136,7 @@ export async function completeBuild(projectId: string, seconds: number) {
     ["test", 5000, 900],
   ], project.settings.model);
   revalidatePath("/", "layout");
-  return { version: toClientVersion(version), message };
+  return { version: toClientVersion(version), message, repo: linked.repo ?? null };
 }
 
 export async function stopBuild(projectId: string) {
@@ -225,53 +157,6 @@ export async function stopBuild(projectId: string) {
 }
 
 // ---------------------------------------------------------------------------------------------
-
-export type EditData = EditSummary & {
-  author: "architect" | "you";
-  previousVersionId: string | null;
-  focusPage?: string;
-  commit?: string;
-  /** The bug this change left behind, if any. The card offers Fix it while it's still open. */
-  issue?: Pick<Issue, "id" | "pageId" | "plain">;
-  /** What the testing agent checked, and anything it caught and fixed inside this change. */
-  test?: TestReport;
-  /** Set when the change came through diff review. */
-  review?: { accepted: number; total: number };
-  fixed?: boolean;
-};
-
-async function saveEditVersion(
-  db: DB,
-  project: Project,
-  plan: Plan,
-  summary: string,
-  changes: string[],
-  author: "architect" | "you",
-  extra: Partial<EditData> = {},
-) {
-  const before = await currentFiles(db, project);
-  const files = generateFiles(plan, project.stack);
-  const number = await nextVersionNumber(db, project.id);
-  const [prev] = project.currentVersionId
-    ? await db.select({ number: versions.number }).from(versions).where(eq(versions.id, project.currentVersionId)).limit(1)
-    : [];
-  const [version] = await db.insert(versions).values({ id: rowId(), projectId: project.id, number, summary, files, plan }).returning();
-  const edit: EditData = {
-    version: number,
-    previousVersion: prev?.number ?? number - 1,
-    previousVersionId: project.currentVersionId,
-    title: summary,
-    changes,
-    files: fileChanges(before, files),
-    author,
-    ...extra,
-  };
-  await db
-    .update(projects)
-    .set({ plan, currentVersionId: version.id, updatedAt: new Date() })
-    .where(eq(projects.id, project.id));
-  return { version: toClientVersion(version), edit };
-}
 
 const sendOptions = z
   .object({ uiMode: z.enum(["simple", "pro"]).optional() })
@@ -421,7 +306,7 @@ export async function sendMessage(projectId: string, rawText: string, mode: "pla
     return { messages: [user, proposal], replaced };
   }
 
-  const { version, edit } = await saveEditVersion(db, project, res.plan, res.title, res.changes, "architect", {
+  const { version, edit, repo } = await saveEditVersion(db, project, res.plan, res.title, res.changes, "architect", {
     commit,
     focusPage: res.focusPage,
     ...(issueRef ? { issue: issueRef } : {}),
@@ -429,7 +314,7 @@ export async function sendMessage(projectId: string, rawText: string, mode: "pla
   });
   const reply = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: res.title, data: edit }, 5);
   revalidatePath("/", "layout");
-  return { messages: [user, reply], plan: res.plan, version };
+  return { messages: [user, reply], plan: res.plan, version, repo };
 }
 
 /** A newer proposal replaces any that are still waiting, so there's only ever one to review. */
@@ -468,11 +353,11 @@ export async function applyPlan(projectId: string, plan: Plan) {
   for (const n of names(before.agents).filter((n) => !names(plan.agents).includes(n))) changes.push(`Removed the ${n} agent`);
   if (plan.appName !== before.appName) changes.push(`Renamed the app to ${plan.appName}`);
   if (changes.length === 0) changes.push("Updated descriptions from the plan");
-  const { version, edit } = await saveEditVersion(db, project, plan, "Applied plan changes", changes, "you");
+  const { version, edit, repo } = await saveEditVersion(db, project, plan, "Applied plan changes", changes, "you");
   const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: "Applied plan changes", data: edit });
   await recordUsage(db, ws.id, projectId, [["build", 6000, 1800]], project.settings.model);
   revalidatePath("/", "layout");
-  return { version, message, plan };
+  return { version, message, plan, repo };
 }
 
 export async function saveFile(projectId: string, path: string, content: string) {
@@ -481,14 +366,14 @@ export async function saveFile(projectId: string, path: string, content: string)
   const { db, project } = await owned(projectId);
   const plan = planOf(project);
   const next: Plan = { ...plan, fileOverrides: { ...(plan.fileOverrides ?? {}), [path]: content } };
-  const { version, edit } = await saveEditVersion(db, project, next, `Edited ${path.split("/").pop()}`, [`You edited ${path}`], "you");
+  const { version, edit, repo } = await saveEditVersion(db, project, next, `Edited ${path.split("/").pop()}`, [`You edited ${path}`], "you");
   const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: edit.title, data: edit });
   revalidatePath("/", "layout");
-  return { version, message, plan: next };
+  return { version, message, plan: next, repo };
 }
 
 export async function restoreVersion(projectId: string, versionId: string) {
-  const { db } = await owned(projectId);
+  const { db, project } = await owned(projectId);
   const [target] = await db
     .select()
     .from(versions)
@@ -500,9 +385,10 @@ export async function restoreVersion(projectId: string, versionId: string) {
     .insert(versions)
     .values({ id: rowId(), projectId, number, summary: `Restored v${target.number}`, files: target.files, plan: target.plan })
     .returning();
+  const linked = repoAfter(project, version.id);
   await db
     .update(projects)
-    .set({ plan: target.plan, currentVersionId: version.id, stage: "ready", updatedAt: new Date() })
+    .set({ plan: target.plan, currentVersionId: version.id, stage: "ready", ...linked, updatedAt: new Date() })
     .where(eq(projects.id, projectId));
   const message = await addMessage(db, projectId, {
     role: "system",
@@ -511,7 +397,7 @@ export async function restoreVersion(projectId: string, versionId: string) {
     data: null,
   });
   revalidatePath("/", "layout");
-  return { version: toClientVersion(version), message, plan: target.plan as Plan };
+  return { version: toClientVersion(version), message, plan: target.plan as Plan, repo: linked.repo ?? null };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -556,7 +442,7 @@ export async function acceptProposal(projectId: string, messageId: string, rawPa
   const changes = rejected.length
     ? [...data.changes, `Kept ${rejected.length === 1 ? rejected[0].path : `${rejected.length} files`} as ${rejected.length === 1 ? "it was" : "they were"}`]
     : data.changes;
-  const { version, edit } = await saveEditVersion(db, project, plan, commit, changes, "you", {
+  const { version, edit, repo } = await saveEditVersion(db, project, plan, commit, changes, "you", {
     commit,
     focusPage: data.focusPage,
     review: { accepted: accepted.size, total },
@@ -568,7 +454,7 @@ export async function acceptProposal(projectId: string, messageId: string, rawPa
   const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: commit, data: edit });
   await recordUsage(db, ws.id, projectId, [["review", 1200, 200]], project.settings.model);
   revalidatePath("/", "layout");
-  return { ok: true as const, version, message, proposal: toClientMessage({ ...row, data: closed }), plan };
+  return { ok: true as const, version, message, proposal: toClientMessage({ ...row, data: closed }), plan, repo };
 }
 
 export async function discardProposal(projectId: string, messageId: string) {
@@ -608,7 +494,7 @@ export async function fixIssue(projectId: string, issueId: string) {
   if (!fixed) return { ok: false as const, error: "That problem is already fixed." };
   const { plan, issue } = fixed;
   const title = `Fixed: ${issue.plain.replace(/\.$/, "")}`;
-  const { version, edit } = await saveEditVersion(db, project, plan, title, [issue.fix], "architect", {
+  const { version, edit, repo } = await saveEditVersion(db, project, plan, title, [issue.fix], "architect", {
     commit: commitMessage(title, [issue.fix], { type: "fix", scope: issue.pageId }),
     focusPage: issue.pageId,
     fixed: true,
@@ -616,7 +502,7 @@ export async function fixIssue(projectId: string, issueId: string) {
   const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: title, data: edit });
   await recordUsage(db, ws.id, projectId, [["fix", 5200, 900]], project.settings.model);
   revalidatePath("/", "layout");
-  return { ok: true as const, version, message, plan, focusPage: issue.pageId };
+  return { ok: true as const, version, message, plan, focusPage: issue.pageId, repo };
 }
 
 const targetSchema = z.object({
@@ -639,14 +525,14 @@ export async function applyVisualEdit(projectId: string, rawTarget: EditTarget, 
   if (project.stage !== "ready") return { ok: false as const, error: "Build the app first, then point at what to change." };
   const res = applyVisualChange(planOf(project), target, change);
   if (!res.ok) return { ok: false as const, error: res.reply };
-  const { version, edit } = await saveEditVersion(db, project, res.plan, res.title, res.changes, "you", {
+  const { version, edit, repo } = await saveEditVersion(db, project, res.plan, res.title, res.changes, "you", {
     commit: commitMessage(res.title, res.changes),
     focusPage: res.focusPage,
   });
   const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: res.title, data: edit });
   await recordUsage(db, ws.id, projectId, [["build", 2600, 700]], project.settings.model);
   revalidatePath("/", "layout");
-  return { ok: true as const, version, message, plan: res.plan, focusPage: res.focusPage };
+  return { ok: true as const, version, message, plan: res.plan, focusPage: res.focusPage, repo };
 }
 
 /**
@@ -663,7 +549,7 @@ export async function runTests(projectId: string) {
   if (open) {
     const fixed = fixPlanIssue(plan, open.id)!;
     const title = `Testing agent fixed the ${plan.pages.find((p) => p.id === open.pageId)?.name ?? "broken"} page`;
-    const { version, edit } = await saveEditVersion(db, project, fixed.plan, title, [open.fix], "architect", {
+    const { version, edit, repo } = await saveEditVersion(db, project, fixed.plan, title, [open.fix], "architect", {
       commit: commitMessage(title, [open.fix], { type: "fix", scope: open.pageId }),
       focusPage: open.pageId,
       test: { checks },
@@ -671,7 +557,7 @@ export async function runTests(projectId: string) {
     });
     const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: title, data: edit });
     revalidatePath("/", "layout");
-    return { ok: true as const, version, message, plan: fixed.plan, focusPage: open.pageId };
+    return { ok: true as const, version, message, plan: fixed.plan, focusPage: open.pageId, repo };
   }
   const results = testChecks(plan);
   const message = await addMessage(db, projectId, {
@@ -723,13 +609,13 @@ export async function saveAgent(projectId: string, raw: PlanAgent) {
   }
 
   const title = `Updated ${next.name}${/agent$/i.test(next.name) ? "" : " agent"}`;
-  const { version, edit } = await saveEditVersion(db, project, nextPlan, title, changes, "you", {
+  const { version, edit, repo } = await saveEditVersion(db, project, nextPlan, title, changes, "you", {
     commit: commitMessage(title, changes, { scope: "agents" }),
   });
   const message = await addMessage(db, projectId, { role: "assistant", kind: "edit", content: title, data: edit });
   await recordUsage(db, ws.id, projectId, [["agents", 2400, 900]], project.settings.model);
   revalidatePath("/", "layout");
-  return { ok: true as const, plan: nextPlan, changes, version, message };
+  return { ok: true as const, plan: nextPlan, changes, version, message, repo };
 }
 
 /** Test cases from the console. They're checks, not code, so they don't make a version. */

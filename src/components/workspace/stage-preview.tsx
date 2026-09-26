@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, CircleX, Hammer, History, MousePointerClick, Wrench } from "lucide-react";
+import { AlertTriangle, ChevronDown, CircleX, Code2, Hammer, History, MousePointerClick, ServerCog, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
@@ -107,6 +107,9 @@ export function PreviewPanel({
   }, [target]);
 
   if (building) return <BuildingSkeleton ws={ws} />;
+
+  const imported = ws.settings.import;
+  if (imported && !imported.previewable && ws.currentVersionId) return <CodeOnly ws={ws} />;
 
   if (!source || (!ws.currentVersionId && !ws.build)) {
     return (
@@ -301,6 +304,30 @@ function IssueBanner({ ws, issue, isPro, currentPage, more }: { ws: Workspace; i
           {more > 0 && `\n\n${more} more ${more === 1 ? "problem" : "problems"} in the Problems tab (⌘J).`}
         </pre>
       )}
+    </div>
+  );
+}
+
+/** Imported code that can't run in the browser: say so plainly, and point at what still works. */
+function CodeOnly({ ws }: { ws: Workspace }) {
+  const imported = ws.settings.import!;
+  return (
+    <div className="flex h-full items-center justify-center p-6">
+      <EmptyState
+        className="w-full max-w-lg bg-background/80"
+        icon={<ServerCog />}
+        title={`This ${imported.framework} project can't preview here`}
+        description={imported.reason ?? "Previews need a server sandbox, which isn't available in this demo. You can still edit, version and push it."}
+        action={
+          <div className="flex flex-col items-center gap-3">
+            <Button variant="outline" onClick={() => ws.setTab("code")}>
+              <Code2 />
+              Open the code
+            </Button>
+            <p className="text-xs text-muted-foreground">Every change you ask for in the chat still lands as a version{ws.repo ? " and a commit" : ""}.</p>
+          </div>
+        }
+      />
     </div>
   );
 }

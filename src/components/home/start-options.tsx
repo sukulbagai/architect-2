@@ -4,7 +4,6 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { LayoutTemplate, Sparkles } from "lucide-react";
 import { GithubGlyph } from "@/components/auth/brand-icons";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { ConsultantDialog } from "@/components/home/consultant-dialog";
 
@@ -13,7 +12,7 @@ const OPTIONS = [
     id: "import",
     icon: GithubGlyph,
     title: "Import a repo",
-    body: "Bring a GitHub project and keep building",
+    body: "Bring a repo, a Git URL or a ZIP and keep building",
   },
   {
     id: "template",
@@ -48,9 +47,7 @@ export function StartOptions({ className, role, openConsultant = false }: { clas
       setConsultant(true);
       return;
     }
-    toast("Importing arrives with the GitHub milestone", {
-      description: "This entry point is in place so the flow is visible now.",
-    });
+    router.push("/import");
   }
 
   return (

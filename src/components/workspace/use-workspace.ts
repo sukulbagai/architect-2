@@ -23,6 +23,20 @@ import {
   type ClientMessage,
   type ClientVersion,
 } from "@/lib/actions/build";
+import {
+  closePullRequest as closePrAction,
+  createBranch as createBranchAction,
+  linkRepository,
+  mergePullRequest as mergePrAction,
+  openPullRequest as openPrAction,
+  pullRepository,
+  pushRepository,
+  setAutoCommit as setAutoCommitAction,
+  simulateTeammatePush,
+  switchBranch as switchBranchAction,
+  unlinkRepository,
+} from "@/lib/actions/github";
+import { repoStatus, type ProjectRepo } from "@/lib/sim/github";
 import type { Mode, ProjectSettings, ProjectStage, ProjectStatus } from "@/db/schema";
 import type { EditTarget, VisualChange } from "@/lib/sim/visual";
 import type { ConnectionView } from "@/lib/integrations";
@@ -36,8 +50,10 @@ export type LogLine = { id: number; at: number; level: LogLevel; source: "app" |
 const MAX_LOGS = 400;
 let logSeq = 0;
 
-/** Result of any server action that lands a new version. */
-type Landed = { version: ClientVersion; message: ClientMessage; plan: Plan; focusPage?: string };
+/** Result of any server action that lands a new version. `repo` is the linked repo after it. */
+type Landed = { version: ClientVersion; message: ClientMessage; plan: Plan; focusPage?: string; repo?: ProjectRepo | null };
+
+export type LinkInput = { mode: "create"; name: string; private: boolean; description?: string } | { mode: "existing"; name: string };
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -96,6 +112,11 @@ export function useWorkspace(
     initialTab?: TabId | null;
     initialAgentId?: string | null;
     connections: ConnectionView[];
+    /** The linked (simulated) GitHub repo, and the workspace's GitHub login when connected. */
+    repo: ProjectRepo | null;
+    githubLogin: string | null;
+    /** Decided on the server: whether the teammate's change had already landed when the page loaded. */
+    teammateArrived: boolean;
   },
   uiMode: Mode,
   /** Called when someone asks to see a stage tab, so the phone layout can switch to the App view. */
@@ -127,8 +148,54 @@ export function useWorkspace(
   const [codeLine, setCodeLine] = useState<{ line: number; n: number } | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const planSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [repo, setRepo] = useState<ProjectRepo | null>(init.repo);
+  const [githubLogin, setGithubLogin] = useState(init.githubLogin);
+  const [pushing, setPushing] = useState(false);
+  const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [arrivedAt, setArrivedAt] = useState<string | null>(init.teammateArrived ? init.repo?.teammate?.at ?? null : null);
 
   const currentVersion = useMemo(() => versions.find((v) => v.id === currentVersionId) ?? null, [versions, currentVersionId]);
+
+  // The teammate's change lands on the remote at a set time (about two minutes after linking).
+  const teammateAt = repo?.teammate && !repo.teammate.pulled ? repo.teammate.at : null;
+  const teammateArrived = !!teammateAt && arrivedAt === teammateAt;
+  useEffect(() => {
+    if (!teammateAt || arrivedAt === teammateAt) return;
+    const t = setTimeout(() => setArrivedAt(teammateAt), Math.max(0, Date.parse(teammateAt) - Date.now()));
+    return () => clearTimeout(t);
+  }, [teammateAt, arrivedAt]);
+  const git = useMemo(() => (repo ? repoStatus(repo, teammateArrived ? Number.MAX_SAFE_INTEGER : 0) : null), [repo, teammateArrived]);
+
+  /** Shows "Pushing…" on the chip for a moment, the way an auto-commit push would. */
+  const flashPushing = useCallback((ms = 1000) => {
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    setPushing(true);
+    pushTimer.current = setTimeout(() => setPushing(false), ms);
+  }, []);
+  useEffect(() => () => {
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+  }, []);
+
+  /** The repo after a new version: with auto-commit the version was pushed, so the chip flickers. */
+  const landRepo = useCallback(
+    (next: ProjectRepo | null | undefined) => {
+      if (next === undefined) return;
+      setRepo(next);
+      const b = next?.branches[next.branch];
+      if (next?.autoCommit && b && b.commits.length > 0 && b.pushed === b.commits.length) flashPushing();
+    },
+    [flashPushing],
+  );
+
+  /** Every new version goes through here: it becomes current and, when linked, a commit. */
+  const addVersion = useCallback(
+    (version: ClientVersion, nextRepo?: ProjectRepo | null) => {
+      setVersions((v) => [...v, version]);
+      setCurrentVersionId(version.id);
+      landRepo(nextRepo);
+    },
+    [landRepo],
+  );
 
   // Tabs opened from the UI (a card's "Review", a file link) also bring the stage into view on phones.
   const showStage = useRef(onShowStage);
@@ -223,8 +290,7 @@ export function useWorkspace(
           stopTimer();
           try {
             const res = await completeBuild(project.id, t / 1000);
-            setVersions((v) => [...v, res.version]);
-            setCurrentVersionId(res.version.id);
+            addVersion(res.version, res.repo);
             setMessages((m) => [...m, res.message]);
             setProject((p) => ({ ...p, stage: "ready", status: "draft" }));
             setPreviewVersionId(null);
@@ -236,7 +302,7 @@ export function useWorkspace(
         }
       }, 50);
     },
-    [project.id],
+    [addVersion, project.id],
   );
 
   const runBuild = useCallback(async () => {
@@ -327,8 +393,7 @@ export function useWorkspace(
     setThinking("Applying the plan");
     try {
       const res = await applyPlan(project.id, plan);
-      setVersions((v) => [...v, res.version]);
-      setCurrentVersionId(res.version.id);
+      addVersion(res.version, res.repo);
       setMessages((m) => [...m, res.message]);
       setPlanDirty(false);
       setTabState("preview");
@@ -337,7 +402,7 @@ export function useWorkspace(
     } finally {
       setThinking(null);
     }
-  }, [plan, project.id]);
+  }, [addVersion, plan, project.id]);
 
   // ---------------------------------------------------------------------------------------------
   // Chat
@@ -363,15 +428,17 @@ export function useWorkspace(
   }, []);
 
   /** A new version arrived from the server: make it current and show it. */
-  const land = useCallback((res: Landed) => {
-    setVersions((v) => [...v, res.version]);
-    setCurrentVersionId(res.version.id);
-    setMessages((m) => [...m, res.message]);
-    setPlan(res.plan);
-    setPlanDirty(false);
-    setPreviewVersionId(null);
-    setPreviewPage(res.focusPage ?? null);
-  }, []);
+  const land = useCallback(
+    (res: Landed) => {
+      addVersion(res.version, res.repo);
+      setMessages((m) => [...m, res.message]);
+      setPlan(res.plan);
+      setPlanDirty(false);
+      setPreviewVersionId(null);
+      setPreviewPage(res.focusPage ?? null);
+    },
+    [addVersion],
+  );
 
   const send = useCallback(
     async (text: string, mode: "plan" | "build") => {
@@ -401,8 +468,7 @@ export function useWorkspace(
         setMessages((m) => [...m.filter((x) => x.id !== optimistic.id).map((x) => replaced.find((r) => r.id === x.id) ?? x), ...res.messages]);
         if ("plan" in res && res.plan) setPlan(res.plan);
         if ("version" in res && res.version) {
-          setVersions((v) => [...v, res.version!]);
-          setCurrentVersionId(res.version.id);
+          addVersion(res.version, res.repo);
           setPreviewVersionId(null);
           const edit = res.messages.find((m) => m.kind === "edit")?.data as { focusPage?: string } | undefined;
           setPreviewPage(edit?.focusPage ?? null);
@@ -413,7 +479,7 @@ export function useWorkspace(
         toast.error("That message didn't go through", { description: "Please try again." });
       }
     },
-    [project.id, project.stage, pageCount, reviewing, testAfterChanges, think, uiMode],
+    [addVersion, project.id, project.stage, pageCount, reviewing, testAfterChanges, think, uiMode],
   );
 
   // ---------------------------------------------------------------------------------------------
@@ -541,8 +607,7 @@ export function useWorkspace(
     async (versionId: string) => {
       try {
         const res = await restoreVersion(project.id, versionId);
-        setVersions((v) => [...v, res.version]);
-        setCurrentVersionId(res.version.id);
+        addVersion(res.version, res.repo);
         setMessages((m) => [...m, res.message]);
         if (res.plan) setPlan(res.plan);
         setPreviewVersionId(null);
@@ -554,14 +619,34 @@ export function useWorkspace(
         toast.error("Couldn't restore that version");
       }
     },
-    [project.id, versions],
+    [addVersion, project.id, versions],
   );
 
-  /** The version just before the current one, which Undo brings back. */
+  /** The versions on the current branch, oldest first (all of them when no repo is linked). */
+  const branchVersions = useMemo(() => {
+    const ids = repo?.branches[repo.branch]?.commits;
+    if (!ids) return [...versions].sort((a, b) => a.number - b.number);
+    const byId = new Map(versions.map((v) => [v.id, v]));
+    return ids.map((id) => byId.get(id)).filter((v): v is ClientVersion => !!v);
+  }, [repo, versions]);
+
+  /** The version just before the current one on this branch, which Undo brings back. */
   const previousVersion = useMemo(() => {
     if (!currentVersion) return null;
-    return [...versions].filter((v) => v.number < currentVersion.number).sort((a, b) => b.number - a.number)[0] ?? null;
-  }, [versions, currentVersion]);
+    const i = branchVersions.findIndex((v) => v.id === currentVersion.id);
+    if (i > 0) return branchVersions[i - 1];
+    return i === 0 ? null : [...versions].filter((v) => v.number < currentVersion.number).sort((a, b) => b.number - a.number)[0] ?? null;
+  }, [branchVersions, versions, currentVersion]);
+
+  /** Commit subjects: the conventional-commit line an edit carried, or the version's summary. */
+  const commitSubjects = useMemo(() => {
+    const byNumber = new Map<number, string>();
+    for (const m of messages) {
+      const d = m.data as { version?: number; commit?: string } | null;
+      if (m.kind === "edit" && d?.version && d.commit) byNumber.set(d.version, d.commit);
+    }
+    return Object.fromEntries(versions.map((v) => [v.id, byNumber.get(v.number) ?? v.summary])) as Record<string, string>;
+  }, [messages, versions]);
 
   const undo = useCallback(async () => {
     if (!previousVersion) {
@@ -591,7 +676,11 @@ export function useWorkspace(
     });
   }, []);
 
-  const addConnection = useCallback((c: ConnectionView) => setConnections((list) => [c, ...list.filter((x) => x.id !== c.id)]), []);
+  const addConnection = useCallback((c: ConnectionView) => {
+    setConnections((list) => [c, ...list.filter((x) => x.id !== c.id)]);
+    // Connecting GitHub anywhere in the Workspace (the agent editor, too) is connecting it for the chip.
+    if (c.integrationId === "github") setGithubLogin(c.account.replace(/^@/, ""));
+  }, []);
 
   /** Saves one agent. After the first build that's a new version; before it, just the plan. */
   const saveAgent = useCallback(
@@ -603,7 +692,7 @@ export function useWorkspace(
           return false;
         }
         if (res.version && res.message) {
-          land({ version: res.version, message: res.message, plan: res.plan });
+          land({ version: res.version, message: res.message, plan: res.plan, repo: res.repo });
           toast.success(`Saved ${agent.name} as v${res.version.number}`, { description: res.changes.length === 1 ? res.changes[0] : `${res.changes.length} changes` });
         } else {
           setPlan(res.plan);
@@ -630,21 +719,239 @@ export function useWorkspace(
     [project.id],
   );
 
+  // ---------------------------------------------------------------------------------------------
+  // GitHub (simulated): link, push, pull, branches, pull requests
+
+  const addMessage = useCallback((m: ClientMessage | null | undefined) => {
+    if (m) setMessages((list) => [...list, m]);
+  }, []);
+
+  /**
+   * Links a new or existing repo. The sheet plays its progress first, then calls `adopt()` to show
+   * the linked repo, so "Pushing 23 files" isn't skipped.
+   */
+  const linkRepo = useCallback(
+    async (input: LinkInput) => {
+      const res = await linkRepository(project.id, { ...input, uiMode });
+      if (!res.ok) return res;
+      return {
+        ...res,
+        adopt: () => {
+          setRepo(res.repo);
+          addMessage(res.message);
+        },
+      };
+    },
+    [addMessage, project.id, uiMode],
+  );
+
+  const unlinkRepo = useCallback(async () => {
+    try {
+      const res = await unlinkRepository(project.id);
+      setRepo(null);
+      addMessage(res.message);
+    } catch {
+      toast.error("Couldn't unlink the repository");
+    }
+  }, [addMessage, project.id]);
+
+  const pushRepo = useCallback(async () => {
+    if (!repo) return false;
+    setPushing(true);
+    const started = Date.now();
+    try {
+      const res = await pushRepository(project.id);
+      await wait(Math.max(0, 900 - (Date.now() - started)));
+      if (!res.ok) {
+        toast.error("Push rejected", { description: res.error });
+        return false;
+      }
+      setRepo(res.repo);
+      toast.success(
+        res.count === 0
+          ? `Published ${res.repo.branch}`
+          : `Pushed ${res.count} ${res.count === 1 ? "commit" : "commits"} to origin/${res.repo.branch}`,
+      );
+      return true;
+    } catch {
+      toast.error("Couldn't push", { description: "Please try again." });
+      return false;
+    } finally {
+      setPushing(false);
+    }
+  }, [project.id, repo]);
+
+  const pullRepo = useCallback(async () => {
+    if (!repo || thinking) return false;
+    try {
+      const res = await think([`Fetching origin/${repo.branch}`, "Merging 1 commit"], 1400, () => pullRepository(project.id));
+      if (!res.ok) {
+        toast(res.error);
+        return false;
+      }
+      land(res);
+      toast.success("Pulled 1 commit", { description: `Saved as v${res.version.number}.` });
+      return true;
+    } catch {
+      toast.error("Couldn't pull", { description: "Please try again." });
+      return false;
+    }
+  }, [land, project.id, repo, think, thinking]);
+
+  const setAutoCommit = useCallback(
+    async (on: boolean) => {
+      if (!repo) return;
+      const before = repo;
+      setRepo({ ...repo, autoCommit: on });
+      try {
+        const res = await setAutoCommitAction(project.id, on);
+        if (!res.ok) throw new Error(res.error);
+        setRepo(res.repo);
+        if (res.pushed > 0) {
+          flashPushing();
+          toast.success(`Pushed ${res.pushed} waiting ${res.pushed === 1 ? "commit" : "commits"}`);
+        }
+      } catch {
+        setRepo(before);
+        toast.error("Couldn't change auto-commit");
+      }
+    },
+    [flashPushing, project.id, repo],
+  );
+
+  const simulateTeammate = useCallback(async () => {
+    try {
+      const res = await simulateTeammatePush(project.id);
+      if (!res.ok) throw new Error(res.error);
+      setRepo(res.repo);
+      toast(`${res.repo.defaultBranch} has a new commit on GitHub`, { description: "Maya Chen pushed a README change. Pull to get it." });
+    } catch {
+      toast.error("Couldn't simulate the push");
+    }
+  }, [project.id]);
+
+  /** After a switch or a merge the app shows that branch's latest version. */
+  const moveTo = useCallback((versionId: string, nextPlan: Plan | null) => {
+    setCurrentVersionId(versionId);
+    if (nextPlan) setPlan(nextPlan);
+    setPlanDirty(false);
+    setPreviewVersionId(null);
+    setPreviewPage(null);
+    setProject((p) => ({ ...p, stage: "ready" }));
+  }, []);
+
+  const newBranch = useCallback(
+    async (name: string) => {
+      const res = await createBranchAction(project.id, name);
+      if (res.ok) {
+        setRepo(res.repo);
+        addMessage(res.message);
+      }
+      return res;
+    },
+    [addMessage, project.id],
+  );
+
+  const switchBranch = useCallback(
+    async (name: string) => {
+      try {
+        const res = await switchBranchAction(project.id, name);
+        if (!res.ok) {
+          toast(res.error);
+          return false;
+        }
+        setRepo(res.repo);
+        moveTo(res.currentVersionId, res.plan);
+        addMessage(res.message);
+        return true;
+      } catch {
+        toast.error("Couldn't switch branches");
+        return false;
+      }
+    },
+    [addMessage, moveTo, project.id],
+  );
+
+  const openPr = useCallback(
+    async (input: { title: string; body: string }) => {
+      const res = await openPrAction(project.id, input);
+      if (res.ok) {
+        setRepo(res.repo);
+        addMessage(res.message);
+      }
+      return res;
+    },
+    [addMessage, project.id],
+  );
+
+  const mergePr = useCallback(
+    async (number: number) => {
+      try {
+        const res = await mergePrAction(project.id, number);
+        if (!res.ok) {
+          toast(res.error);
+          return false;
+        }
+        if (res.version) addVersion(res.version, res.repo);
+        else setRepo(res.repo);
+        moveTo(res.currentVersionId, res.plan);
+        addMessage(res.message);
+        toast.success(`Merged #${number}`, { description: `You're on ${res.repo.branch} now.` });
+        return true;
+      } catch {
+        toast.error("Couldn't merge the pull request");
+        return false;
+      }
+    },
+    [addMessage, addVersion, moveTo, project.id],
+  );
+
+  const closePr = useCallback(
+    async (number: number) => {
+      try {
+        const res = await closePrAction(project.id, number);
+        if (!res.ok) throw new Error(res.error);
+        setRepo(res.repo);
+      } catch {
+        toast.error("Couldn't close the pull request");
+      }
+    },
+    [project.id],
+  );
+
   const saveCode = useCallback(
     async (path: string, content: string) => {
       const res = await saveFile(project.id, path, content);
-      setVersions((v) => [...v, res.version]);
-      setCurrentVersionId(res.version.id);
+      addVersion(res.version, res.repo);
       setMessages((m) => [...m, res.message]);
       setPlan(res.plan);
       toast.success(`Saved ${path.split("/").pop()} as v${res.version.number}`);
     },
-    [project.id],
+    [addVersion, project.id],
   );
 
   return {
     project,
     setProject,
+    repo,
+    git,
+    githubLogin,
+    setGithubLogin,
+    pushing,
+    teammateArrived,
+    branchVersions,
+    commitSubjects,
+    linkRepo,
+    unlinkRepo,
+    pushRepo,
+    pullRepo,
+    setAutoCommit,
+    simulateTeammate,
+    newBranch,
+    switchBranch,
+    openPr,
+    mergePr,
+    closePr,
     agentId,
     setAgentId,
     openAgent,

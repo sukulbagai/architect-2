@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  FileArchive,
   FileCode2,
   FlaskConical,
   GitCompare,
@@ -16,6 +17,7 @@ import {
   Lightbulb,
   Loader2,
   RotateCcw,
+  ServerCog,
   ShieldCheck,
   Sparkles,
   Square,
@@ -27,6 +29,8 @@ import { LogoMark } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
 import type { ClientMessage, EditData } from "@/lib/actions/build";
 import type { BuildStepId, BuildSummary, PlanQuestion, ProposalData } from "@/lib/sim/types";
+import type { ImportSummary } from "@/lib/sim/import";
+import { GithubGlyph } from "@/components/auth/brand-icons";
 import { STEP_LABEL, STEP_ORDER, type Workspace } from "./use-workspace";
 import { SLASH_COMMANDS } from "./chat-composer";
 
@@ -171,6 +175,12 @@ function MessageView({ m, ws, isPro, onSend }: { m: ClientMessage } & Props) {
       return (
         <AssistantRow>
           <ProposalCard ws={ws} isPro={isPro} id={m.id} data={data as unknown as ProposalData} />
+        </AssistantRow>
+      );
+    case "import":
+      return (
+        <AssistantRow>
+          <ImportCard ws={ws} intro={m.content} data={data as unknown as ImportSummary} onSend={onSend} />
         </AssistantRow>
       );
     case "test":
@@ -849,6 +859,107 @@ function ProposalCard({ ws, isPro, id, data }: { ws: Workspace; isPro: boolean; 
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+function ImportCard({ ws, intro, data, onSend }: { ws: Workspace; intro: string; data: ImportSummary; onSend: Props["onSend"] }) {
+  const missing = data.envVars.filter((e) => !e.set);
+  const Source = data.source === "zip" ? FileArchive : GithubGlyph;
+  const fresh = ws.messages[ws.messages.length - 1]?.kind === "import";
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <p className="mb-3 text-sm leading-relaxed">{intro}</p>
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+            <Source className="size-4 shrink-0" />
+            <span className="truncate">{data.repo}</span>
+          </span>
+          {data.branch && <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{data.branch}</span>}
+        </div>
+        <div className="space-y-3.5 px-4 py-3.5 text-sm">
+          <div className="flex flex-wrap gap-1">
+            {[data.framework, data.language, `${data.files} files`, `${data.routes} ${data.routes === 1 ? "route" : "routes"}`].map((c) => (
+              <span key={c} className="rounded-md bg-muted px-2 py-0.5 text-xs leading-5">
+                {c}
+              </span>
+            ))}
+          </div>
+          {data.organisation.length > 0 && (
+            <div>
+              <p className="text-xs text-muted-foreground">Here&apos;s how it&apos;s organised:</p>
+              <ul className="mt-1.5 space-y-1">
+                {data.organisation.map((o) => (
+                  <li key={o.path} className="flex gap-2 text-xs">
+                    <span className="w-24 shrink-0 truncate font-mono text-foreground">{o.path}</span>
+                    <span className="text-muted-foreground">{o.about}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            <span className="text-foreground">Agents:</span> {data.agents.join(", ")}
+            {data.models.length > 0 && (
+              <>
+                {" "}
+                · <span className="text-foreground">Data:</span> {data.models.join(", ")}
+              </>
+            )}
+          </p>
+          {data.previewable ? (
+            <p className="flex items-center gap-2 rounded-lg bg-success-soft px-3 py-2 text-xs text-success">
+              <Check className="size-3.5 shrink-0" />
+              Ready to preview. The app is open on the right.
+            </p>
+          ) : (
+            <p className="flex items-start gap-2 rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">
+              <ServerCog className="mt-px size-3.5 shrink-0" />
+              <span>
+                <span className="font-medium">Code only.</span> {data.reason}
+              </span>
+            </p>
+          )}
+          {data.envVars.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {missing.length === 0
+                ? `All ${data.envVars.length} environment ${data.envVars.length === 1 ? "variable is" : "variables are"} saved, encrypted.`
+                : missing.length === data.envVars.length
+                  ? `Environment variables skipped for now. It reads ${missing.map((e) => e.key).join(", ")}.`
+                  : `${data.envVars.length - missing.length} of ${data.envVars.length} environment variables saved, encrypted. Still to add: ${missing.map((e) => e.key).join(", ")}.`}
+            </p>
+          )}
+        </div>
+        {data.suggestions.length > 0 && (
+          <div className="border-t border-border px-4 py-3">
+            <button type="button" onClick={() => setOpen((o) => !o)} disabled={fresh} className="flex w-full items-center justify-between text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <Sparkles className="size-3.5 text-brand-text" />
+                What should we change first?
+              </span>
+              {!fresh && <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />}
+            </button>
+            {(fresh || open) && (
+              <div className="mt-2.5 flex flex-col gap-1.5">
+                {data.suggestions.map((sug) => (
+                  <button
+                    key={sug}
+                    type="button"
+                    onClick={() => onSend(sug, "build")}
+                    disabled={!!ws.thinking}
+                    className="group flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm transition-colors hover:border-border-strong disabled:opacity-50"
+                  >
+                    {sug}
+                    <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { desc, eq } from "drizzle-orm";
 import { Plus } from "lucide-react";
+import { GithubGlyph } from "@/components/auth/brand-icons";
 import { getDb } from "@/db";
 import { projects } from "@/db/schema";
 import { requireWorkspace } from "@/lib/session";
@@ -37,12 +38,20 @@ export default async function ProjectsPage() {
           rows.length === 1 ? "1 project in this workspace." : `${rows.length} projects in this workspace.`
         }
         actions={
-          <Button asChild>
-            <Link href="/home?new=1">
-              <Plus />
-              New project
-            </Link>
-          </Button>
+          <>
+            <Button asChild variant="outline">
+              <Link href="/import">
+                <GithubGlyph className="size-3.5" />
+                Import
+              </Link>
+            </Button>
+            <Button asChild>
+              <Link href="/home?new=1">
+                <Plus />
+                New project
+              </Link>
+            </Button>
+          </>
         }
       />
       <ProjectsView projects={rows.map(({ settings, ...r }) => ({ ...r, templateId: settings.templateId ?? null }))} isPro={ws.mode === "pro"} />

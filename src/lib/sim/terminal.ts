@@ -1,4 +1,5 @@
 import { hashString } from "../seeded";
+import { commitSha, validBranchName } from "./github";
 import type { Issue } from "./types";
 
 /**
@@ -22,9 +23,26 @@ export type TermContext = {
   user: string;
   stack: string;
   cwd: string;
+  /** The linked repo's state, when there is one. Commits are the current branch's, newest first. */
+  git?: TermGit;
 };
 
-export type TermResult = { lines: TermLine[]; cwd?: string; clear?: boolean };
+export type TermGit = {
+  remote: string;
+  connected: boolean;
+  branch: string;
+  defaultBranch: string;
+  branches: { name: string; current: boolean; remoteOnly: boolean; switchable: boolean }[];
+  ahead: number;
+  behind: number;
+  published: boolean;
+  commits: { id: string; number: number; subject: string; pushed: boolean }[];
+};
+
+/** Something the terminal asks the Workspace to really do after printing its output. */
+export type TermEffect = { kind: "push" } | { kind: "pull" } | { kind: "switch"; branch: string } | { kind: "branch"; name: string };
+
+export type TermResult = { lines: TermLine[]; cwd?: string; clear?: boolean; effect?: TermEffect };
 
 export const COMMANDS: { name: string; usage: string; about: string }[] = [
   { name: "help", usage: "help", about: "List these commands" },
@@ -36,7 +54,7 @@ export const COMMANDS: { name: string; usage: string; about: string }[] = [
   { name: "echo", usage: "echo <text>", about: "Print text" },
   { name: "whoami", usage: "whoami", about: "Who you're signed in as" },
   { name: "clear", usage: "clear", about: "Clear the terminal" },
-  { name: "git", usage: "git status | git log --oneline", about: "Versions as commits" },
+  { name: "git", usage: "git status | log | branch | push | pull | switch", about: "Versions as commits, synced to GitHub" },
   { name: "npm", usage: "npm install | npm run dev | npm run build | npm test", about: "Install, run, build and test" },
   { name: "architect", usage: "architect deploy", about: "Deploy from the terminal" },
 ];
@@ -48,9 +66,7 @@ function userSlug(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "") || "you";
 }
 
-export function shortSha(id: string) {
-  return hashString(id).toString(16).padStart(8, "0").slice(0, 7);
-}
+export const shortSha = commitSha;
 
 function norm(cwd: string, arg: string | undefined) {
   if (!arg || arg === "~" || arg === "/") return arg ? "" : cwd;
@@ -212,25 +228,133 @@ export function runCommand(input: string, ctx: TermContext): TermResult {
 
 function git(args: string[], ctx: TermContext): TermResult {
   const sub = args[0];
-  const sorted = [...ctx.versions].sort((a, b) => b.number - a.number);
+  const g = ctx.git;
+  const branch = g?.branch ?? "main";
+  const remote = g ? `${g.remote.replace(/^github\.com\//, "github.com:")}.git` : "";
+  // Without a linked repo, every version is still a commit on a local main.
+  const commits =
+    g?.commits ??
+    [...ctx.versions].sort((a, b) => b.number - a.number).map((v) => ({ id: v.id, number: v.number, subject: v.summary, pushed: false }));
+  const s = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
   if (sub === "status") {
-    return { lines: [line("On branch main"), line("nothing to commit, working tree clean")] };
+    const out: TermLine[] = [line(`On branch ${branch}`)];
+    if (!g) out.push(line("No remote yet. Link a repository from the GitHub button in the top bar.", "muted"));
+    else if (!g.published) out.push(line(`Your branch isn't on GitHub yet.`), line(`  (use "git push -u origin ${branch}" to publish it)`, "muted"));
+    else if (g.behind && g.ahead) out.push(line(`Your branch and 'origin/${branch}' have diverged,`), line(`and have ${g.ahead} and ${g.behind} different commits each, respectively.`), line(`  (use "git pull" to merge the remote branch into yours)`, "muted"));
+    else if (g.behind) out.push(line(`Your branch is behind 'origin/${branch}' by ${s(g.behind, "commit")}, and can be fast-forwarded.`), line(`  (use "git pull" to update your local branch)`, "muted"));
+    else if (g.ahead) out.push(line(`Your branch is ahead of 'origin/${branch}' by ${s(g.ahead, "commit")}.`), line(`  (use "git push" to publish your local commits)`, "muted"));
+    else out.push(line(`Your branch is up to date with 'origin/${branch}'.`));
+    out.push(blank(), line("nothing to commit, working tree clean"));
+    return { lines: out };
   }
+
   if (sub === "log") {
-    if (sorted.length === 0) return { lines: [line("fatal: your current branch 'main' does not have any commits yet", "error")] };
+    if (commits.length === 0) return { lines: [line(`fatal: your current branch '${branch}' does not have any commits yet`, "error")] };
+    const originAt = g?.published ? commits.find((c) => c.pushed)?.id : undefined;
     return {
-      lines: sorted.map((v) => ({
-        segs: [
-          { text: `${shortSha(v.id)} `, tone: "warning" },
-          ...(v.current ? [{ text: "(HEAD -> main) ", tone: "info" as Tone }] : []),
-          { text: `v${v.number} · ${v.summary}` },
-        ],
-      })),
+      lines: commits.map((c, i) => {
+        const refs = [...(i === 0 ? [`HEAD -> ${branch}`] : []), ...(c.id === originAt ? [`origin/${branch}`] : [])];
+        return {
+          segs: [
+            { text: `${commitSha(c.id)} `, tone: "warning" as Tone },
+            ...(refs.length ? [{ text: `(${refs.join(", ")}) `, tone: "info" as Tone }] : []),
+            { text: c.subject },
+            { text: ` · v${c.number}`, tone: "muted" as Tone },
+          ],
+        };
+      }),
     };
   }
-  if (sub === "branch") return { lines: [{ segs: [{ text: "* " }, { text: "main", tone: "success" }] }] };
+
+  if (sub === "branch") {
+    if (!g) return { lines: [{ segs: [{ text: "* " }, { text: "main", tone: "success" }] }] };
+    return {
+      lines: g.branches.map((b) =>
+        b.remoteOnly
+          ? line(`  remotes/origin/${b.name}`, "error")
+          : { segs: [{ text: b.current ? "* " : "  " }, { text: b.name, tone: b.current ? ("success" as Tone) : undefined }] },
+      ),
+    };
+  }
+
+  if (sub === "remote") {
+    if (!g) return { lines: [] };
+    return { lines: [line(`origin\tgit@${remote} (fetch)`), line(`origin\tgit@${remote} (push)`)] };
+  }
+
+  if (sub === "push") {
+    if (!g) return { lines: [line("fatal: No configured push destination.", "error"), line("Link a repository from the GitHub button in the top bar, then push.", "muted")] };
+    if (!g.connected) return { lines: [line(`fatal: Authentication failed for 'https://${g.remote}.git/'`, "error"), line("GitHub is disconnected. Reconnect it from the GitHub button in the top bar.", "muted")] };
+    if (g.behind) {
+      return {
+        lines: [
+          line(`To ${remote}`, undefined, 600),
+          { segs: [{ text: " ! [rejected]        ", tone: "error" }, { text: `${branch} -> ${branch} (fetch first)` }] },
+          line(`error: failed to push some refs to '${remote}'`, "error"),
+          line("hint: Updates were rejected because the remote contains work that you do not", "warning"),
+          line('hint: have locally. Run "git pull" first, then push again.', "warning"),
+        ],
+      };
+    }
+    if (g.published && g.ahead === 0) return { lines: [line("Everything up-to-date", undefined, 300)] };
+    const objects = 3 + g.ahead * 4;
+    const from = commits.find((c) => c.pushed)?.id;
+    const to = commits[0]?.id;
+    return {
+      effect: { kind: "push" },
+      lines: [
+        line(`Enumerating objects: ${objects}, done.`, "muted", 300),
+        line(`Counting objects: 100% (${objects}/${objects}), done.`, "muted", 150),
+        line(`Writing objects: 100% (${objects - 2}/${objects - 2}), ${(1.2 + g.ahead * 0.8).toFixed(2)} KiB | 2.1 MiB/s, done.`, "muted", 450),
+        line(`To ${remote}`),
+        g.published && from && to
+          ? line(`   ${commitSha(from)}..${commitSha(to)}  ${branch} -> ${branch}`)
+          : { segs: [{ text: " * [new branch]      ", tone: "success" }, { text: `${branch} -> ${branch}` }] },
+        ...(g.published ? [] : [line(`branch '${branch}' set up to track 'origin/${branch}'.`, "muted")]),
+      ],
+    };
+  }
+
+  if (sub === "pull") {
+    if (!g) return { lines: [line("fatal: No remote repository specified.", "error"), line("Link a repository from the GitHub button in the top bar first.", "muted")] };
+    if (!g.connected) return { lines: [line(`fatal: Authentication failed for 'https://${g.remote}.git/'`, "error")] };
+    if (!g.behind) return { lines: [line("Already up to date.", undefined, 500)] };
+    const head = commits[0]?.id ?? "0";
+    const incoming = commitSha(`${head}:remote`);
+    return {
+      effect: { kind: "pull" },
+      lines: [
+        line("remote: Enumerating objects: 5, done.", "muted", 500),
+        line("remote: Total 3 (delta 1), reused 0 (delta 0)", "muted", 150),
+        line(`From ${remote.replace(/\.git$/, "")}`),
+        line(`   ${commitSha(head)}..${incoming}  ${branch}     -> origin/${branch}`),
+        ...(g.ahead ? [line("Merge made by the 'ort' strategy.", undefined, 300)] : [line(`Updating ${commitSha(head)}..${incoming}`, undefined, 300), line("Fast-forward")]),
+        { segs: [{ text: " README.md | 7 " }, { text: "+++++++", tone: "success" }] },
+        line(" 1 file changed, 7 insertions(+)"),
+      ],
+    };
+  }
+
+  if (sub === "checkout" || sub === "switch") {
+    const create = args[1] === "-b" || args[1] === "-c";
+    const target = create ? args[2] : args[1];
+    if (!target) return { lines: [line(`usage: git ${sub} ${sub === "switch" ? "[-c] " : "[-b] "}<branch>`, "muted")] };
+    if (!g) return { lines: [line("Link a repository from the GitHub button in the top bar to use branches.", "muted")] };
+    if (create) {
+      const bad = validBranchName(target, g.branches.map((b) => b.name));
+      if (bad) return { lines: [line(`fatal: ${bad.replace(/\.$/, "")}`, "error")] };
+      return { effect: { kind: "branch", name: target }, lines: [line(`Switched to a new branch '${target}'`)] };
+    }
+    const b = g.branches.find((x) => x.name === target);
+    if (!b) return { lines: [line(`error: pathspec '${target}' did not match any file(s) known to git`, "error")] };
+    if (b.current) return { lines: [line(`Already on '${target}'`)] };
+    if (!b.switchable) return { lines: [line(`error: '${target}' has code from outside Architect. Merge a pull request into it first.`, "error")] };
+    return { effect: { kind: "switch", branch: target }, lines: [line(`Switched to branch '${target}'`)] };
+  }
+
   if (sub === "diff") return { lines: [] };
-  if (!sub) return { lines: [line("usage: git status | git log --oneline | git branch", "muted")] };
+  if (!sub) return { lines: [line("usage: git status | log | branch | push | pull | switch <branch> | switch -c <branch> | remote -v", "muted")] };
   return { lines: [line(`git: '${sub}' is not a git command. See 'git --help'.`, "error")] };
 }
 

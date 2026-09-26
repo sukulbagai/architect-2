@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { ChevronRight, Copy, File, FileCode2, FileJson, FileText, Folder, Loader2, Lock, Save, Undo2 } from "lucide-react";
+import { ArrowUpFromLine, ChevronRight, Copy, File, FileCode2, FileJson, FileText, Folder, Loader2, Lock, Save, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
+import { fileChanges } from "@/lib/sim/script";
+import type { FileChange } from "@/lib/sim/types";
 import type { Workspace } from "./use-workspace";
 
 const CodeEditor = dynamic(() => import("./code-editor"), {
@@ -39,6 +41,12 @@ function buildTree(paths: string[]): Node[] {
   return sort(root.children!);
 }
 
+const GIT_MARK: Record<FileChange["status"], { letter: string; className: string; label: string }> = {
+  modified: { letter: "M", className: "text-warning", label: "Modified since the last push" },
+  added: { letter: "A", className: "text-success", label: "Added since the last push" },
+  deleted: { letter: "D", className: "text-destructive", label: "Deleted since the last push" },
+};
+
 function FileIcon({ path }: { path: string }) {
   if (/\.(tsx?|jsx?|py)$/.test(path)) return <FileCode2 className="size-3.5 shrink-0 text-code-function" />;
   if (/\.json$/.test(path)) return <FileJson className="size-3.5 shrink-0 text-code-type" />;
@@ -59,8 +67,14 @@ export function CodePanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
     }
     return ws.currentVersion?.files ?? {};
   }, [ws.build, ws.currentVersion]);
+  // Pro, linked to a repo: what changed since the last push, like an editor's git gutter.
+  const pushedId = isPro && !building ? ws.git?.lastPushedVersionId ?? null : null;
+  const pushedFiles = pushedId && pushedId !== ws.currentVersionId ? ws.versions.find((v) => v.id === pushedId)?.files : undefined;
+  const changes = useMemo(() => (pushedFiles ? fileChanges(pushedFiles, files) : []), [pushedFiles, files]);
+  const changeOf = useMemo(() => new Map(changes.map((c) => [c.path, c.status])), [changes]);
+  const deleted = useMemo(() => changes.filter((c) => c.status === "deleted").map((c) => c.path), [changes]);
   const paths = useMemo(() => Object.keys(files).sort(), [files]);
-  const tree = useMemo(() => buildTree(paths), [paths]);
+  const tree = useMemo(() => buildTree([...paths, ...deleted].sort()), [paths, deleted]);
   const selected = ws.codeFile;
   const setSelected = ws.setCodeFile;
   const [follow, setFollow] = useState(true);
@@ -137,6 +151,19 @@ export function CodePanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
     }
     const isActive = n.path === active;
     const writing = ws.build?.writing === n.path;
+    const change = changeOf.get(n.path);
+    const mark = change ? GIT_MARK[change] : null;
+    if (change === "deleted") {
+      return (
+        <li key={n.path}>
+          <span className="flex h-7 w-full items-center gap-1.5 rounded-md pr-2 text-[12.5px] text-muted-foreground/70" style={{ paddingLeft: 20 + depth * 12 }} title={mark!.label}>
+            <FileIcon path={n.path} />
+            <span className="truncate line-through">{n.name}</span>
+            <span className={cn("ml-auto shrink-0 font-mono text-[10.5px] font-semibold", mark!.className)}>D</span>
+          </span>
+        </li>
+      );
+    }
     return (
       <li key={n.path}>
         <button
@@ -155,6 +182,11 @@ export function CodePanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
           <span className="truncate">{n.name}</span>
           {writing && <Loader2 className="ml-auto size-3 shrink-0 animate-spin text-brand-text" />}
           {drafts[n.path] !== undefined && drafts[n.path] !== files[n.path] && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-brand" />}
+          {mark && (
+            <span className={cn("shrink-0 font-mono text-[10.5px] font-semibold", mark.className, !(drafts[n.path] !== undefined && drafts[n.path] !== files[n.path]) && "ml-auto")} title={mark.label} aria-label={mark.label}>
+              {mark.letter}
+            </span>
+          )}
         </button>
       </li>
     );
@@ -167,6 +199,18 @@ export function CodePanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
           <span className="annotation">Files</span>
           <span className="font-mono text-[11px] text-subtle-foreground">{paths.length}</span>
         </div>
+        {changes.length > 0 && ws.repo && (
+          <div className="flex items-center justify-between gap-2 border-b border-border bg-warning-soft/60 px-3 py-1.5">
+            <span className="min-w-0 text-[11.5px] leading-tight text-warning">
+              {changes.length} {changes.length === 1 ? "file" : "files"} changed
+              <span className="block text-[10.5px] opacity-80">since the last push</span>
+            </span>
+            <Button size="xs" variant="outline" className="h-6 shrink-0" disabled={ws.pushing || !ws.githubLogin || !!ws.git?.behind} onClick={() => void ws.pushRepo()} title={ws.git?.behind ? "Pull first: GitHub has a change you don't" : undefined}>
+              {ws.pushing ? <Loader2 className="animate-spin" /> : <ArrowUpFromLine />}
+              Push
+            </Button>
+          </div>
+        )}
         <ul className="min-h-0 flex-1 overflow-y-auto p-1.5 scrollbar-thin">{tree.map((n) => renderNode(n, 0))}</ul>
       </aside>
       <section className="flex min-w-0 flex-1 flex-col">

@@ -14,17 +14,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GithubGlyph } from "@/components/auth/brand-icons";
+import { ConnectGithubDialog } from "@/components/github/connect-github-dialog";
 import type { Mode } from "@/db/schema";
 
 const TOTAL = 3;
 
-export function Onboarding({ initialName, initialRole, initialMode }: { initialName: string; initialRole: string | null; initialMode: Mode }) {
+export function Onboarding({
+  initialName,
+  initialRole,
+  initialMode,
+  githubLogin,
+}: {
+  initialName: string;
+  initialRole: string | null;
+  initialMode: Mode;
+  githubLogin: string | null;
+}) {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [name, setName] = useState(initialName);
   const [role, setRole] = useState<string | null>(initialRole);
   const [mode, setMode] = useState<Mode | null>(initialRole ? initialMode : null);
   const [pending, startTransition] = useTransition();
+  const [login, setLogin] = useState(githubLogin);
+  const [connecting, setConnecting] = useState(false);
 
   function finish(overrides?: Partial<{ role: string; mode: Mode }>) {
     startTransition(async () => {
@@ -146,21 +159,29 @@ export function Onboarding({ initialName, initialRole, initialMode }: { initialN
                 <GithubGlyph className="size-5" />
               </span>
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">Connect GitHub</p>
-                <p className="text-xs text-muted-foreground">Import repos and keep your code in sync. Optional.</p>
+                <p className="text-sm font-medium">{login ? "GitHub connected" : "Connect GitHub"}</p>
+                <p className="text-xs text-muted-foreground">
+                  {login ? (
+                    <>
+                      Connected as <span className="font-mono text-foreground">@{login}</span>. Import repos and sync projects any time.
+                    </>
+                  ) : (
+                    "Import repos and keep your code in sync. Optional."
+                  )}
+                </p>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  toast("GitHub connects in the GitHub milestone", {
-                    description: "You'll find it later under Integrations, and in every project's top bar.",
-                  })
-                }
-              >
-                Connect
-              </Button>
+              {login ? (
+                <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-success">
+                  <Check className="size-3.5" />
+                  Connected
+                </span>
+              ) : (
+                <Button variant="outline" size="sm" onClick={() => setConnecting(true)}>
+                  Connect
+                </Button>
+              )}
             </div>
+            <ConnectGithubDialog open={connecting} onOpenChange={setConnecting} name={initialName} onConnected={(c) => setLogin(c.login)} />
           </section>
         )}
       </div>

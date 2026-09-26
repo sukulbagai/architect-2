@@ -11,13 +11,14 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import type { AgentMemory, AgentTest, KnowledgeFile, PlanAgent } from "@/lib/sim/types";
+import type { ProjectRepo } from "@/lib/sim/github";
 
 export type Mode = "simple" | "pro";
 export type ProjectStatus = "draft" | "building" | "live" | "error";
 export type ProjectStage = "plan" | "build" | "ready";
 export type ProjectSource = "prompt" | "template" | "import";
 
-export type MessageKind = "chat" | "questions" | "plan" | "plan-reply" | "build" | "edit" | "event" | "proposal" | "test";
+export type MessageKind = "chat" | "questions" | "plan" | "plan-reply" | "build" | "edit" | "event" | "proposal" | "test" | "import";
 
 export type ProjectSettings = {
   themePreset?: string;
@@ -32,6 +33,20 @@ export type ProjectSettings = {
   testAfterChanges?: boolean;
   /** Standalone agents picked from the Home composer's + menu, snapshotted so the plan can include them. */
   attachedAgents?: PlanAgent[];
+  /** Set on imported projects: where the code came from and whether the preview can run it. */
+  import?: ProjectImport;
+};
+
+export type ProjectImport = {
+  source: "github" | "url" | "zip";
+  /** "owner/repo", or the ZIP's file name. */
+  from: string;
+  branch: string | null;
+  framework: string;
+  previewable: boolean;
+  /** Why it can't preview, in one sentence. */
+  reason?: string;
+  envVars: string[];
 };
 
 /** Everything about a standalone agent that isn't a column: the same shape a plan agent has. */
@@ -94,7 +109,8 @@ export const projects = pgTable(
     stack: text("stack").notNull().default("react-vite"),
     settings: jsonb("settings").$type<ProjectSettings>().notNull().default({}),
     plan: jsonb("plan"),
-    repo: jsonb("repo").$type<{ owner: string; name: string; branch: string } | null>(),
+    /** The linked (simulated) GitHub repository: branches as lists of version ids, pull requests. */
+    repo: jsonb("repo").$type<ProjectRepo | null>(),
     currentVersionId: text("current_version_id"),
     lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
     createdAt: createdAt(),

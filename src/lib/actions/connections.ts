@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { connections } from "@/db/schema";
+import { connections, workspaces } from "@/db/schema";
 import { requireWorkspace } from "@/lib/session";
 import { rowId } from "@/lib/ids";
 import { toConnectionView } from "@/lib/agent-store";
@@ -103,7 +103,9 @@ export async function disconnect(rawId: string) {
   const id = z.string().max(40).parse(rawId);
   const ws = await requireWorkspace();
   const db = await getDb();
-  await db.delete(connections).where(and(eq(connections.id, id), eq(connections.workspaceId, ws.id)));
+  const [row] = await db.delete(connections).where(and(eq(connections.id, id), eq(connections.workspaceId, ws.id))).returning();
+  // GitHub's connection and the workspace's login go together.
+  if (row?.integrationId === "github") await db.update(workspaces).set({ githubLogin: null, updatedAt: new Date() }).where(eq(workspaces.id, ws.id));
   revalidatePath("/", "layout");
   return { ok: true };
 }

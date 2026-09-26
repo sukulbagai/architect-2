@@ -44,7 +44,9 @@ the database, which runs on free tiers.
 - **Agents** (`agents.ts`, `frameworks.ts`, `agent-code.ts`): each agent's framework, tools, knowledge, memory, guardrails and handoffs are saved and generated as real source for Lyzr, LangGraph, CrewAI, OpenAI Agents SDK, Claude Agent SDK, Google ADK, Mastra or GitAgent (the SDKs only appear in the generated project). A run replies from the agent's scripted samples (the one that best matches the question) with a trace built from its config: tool calls, retrieval, tokens, guardrails, or a handoff when a request mentions a refund or something legal.
 - **Standalone agents**: `/agents/new` drafts one from a sentence. Its Deploy tab publishes a real endpoint, `POST /api/v1/agents/<id>/run`, checked against a hashed API key, plus an embeddable chat widget at `/embed/agent/<id>`. Replies are scripted, so calling it costs nothing.
 - **Connections**: the Integrations page plays a simulated OAuth consent (Allow or Deny) and adds MCP servers and HTTP tools by URL. Nothing contacts the service and no token is stored; connected tools become switches in the agent editor.
-- **Terminal** (`terminal.ts`): a scripted shell over the current version's real files (`ls`, `cat`, `tree`, `git log`, `npm test`, `npm run build`…).
+- **GitHub** (`github.ts`): a simulated account (`@<your-name>`) with eight sample repositories. Every version is a commit (its sha comes from the version id); a linked repo keeps each branch as a list of versions plus how many are pushed, so "2 to push", pushes, auto-commit, new branches, pull requests and merges (a fast-forward, or a three-way merge of the two plans) are all real state. About two minutes after linking, a teammate pushes a README change you can pull (or trigger it with "Simulate a teammate pushing" in Pro).
+- **Import** (`import.ts`, `repo-files.ts`): `/import` takes a GitHub repo, a Git URL or a ZIP (name and size only), streams a scan, and shows what it found: framework, routes, data models, agents, environment variables and whether it can preview. The project opens with the repo's own files, a plan derived from its routes and models, and three first changes the edit engine can really make. Python, Expo and Jupyter repos are honest about what the demo can't run. Environment values are encrypted at rest (AES-256-GCM).
+- **Terminal** (`terminal.ts`): a scripted shell over the current version's real files (`ls`, `cat`, `tree`, `npm test`, `npm run build`…). `git status`, `log`, `branch`, `push`, `pull` and `switch` read and change the linked repo.
 - **Preview** (`src/components/preview`): the generated app, rendered from its plan inside a sandboxed frame, with working tables, drawers, chat, run pipelines and settings.
 
 ## Stack
@@ -65,11 +67,12 @@ the database, which runs on free tiers.
 | `src/app/p/[id]` | The project Workspace |
 | `src/app/p/[id]/preview` | The generated app, rendered from a version's plan |
 | `src/app/(app)/agents` | Agents library, the New agent wizard and each standalone agent (Configure, Test, Deploy, Usage) |
+| `src/app/(app)/import` | Import a project from a GitHub repo, a Git URL or a ZIP |
 | `src/app/api/agents`, `src/app/api/v1/agents` | Agent runs: the test console's (signed in) and the public API (API key) |
 | `src/app/embed/agent/[id]` | The public chat widget |
 | `src/lib/sim` | The simulation engine (see above) |
 | `src/db` | Schema and the Neon/PGlite client |
-| `src/lib/actions` | Server actions (auth, workspace, projects, build, agents, connections, the widget) |
+| `src/lib/actions` | Server actions (auth, workspace, projects, build, agents, connections, GitHub and import, the widget) |
 | `src/proxy.ts` | Redirects signed-out visitors away from app routes |
 
 ### Identity without sign-in
@@ -89,6 +92,6 @@ Light/dark/system is independent of Simple/Pro. Design tokens live in `src/app/g
 | 2. Plan and build | Simulated planning, streamed builds, live preview, code tab, versions, the Consultant | Done |
 | 3. Iterate | Diff review, Fix it, visual edits, testing agent, terminal/logs/problems drawer, ⌘K, / commands and @ mentions | Done |
 | 4. Agents | Agent editor, code in 8 frameworks, flow graph, test console with traces, standalone agents (API + widget), integrations and MCP, knowledge | Done |
-| 5. GitHub | Simulated connect, import, push, branches | Next |
-| 6. Ship | Deploys, live URLs, rollback, env vars, usage | |
+| 5. GitHub | Simulated connect, import with analysis (repo, Git URL, ZIP), sync chip, push, pull, auto-commit, branches, pull requests | Done |
+| 6. Ship | Deploys, live URLs, rollback, env vars, usage | Next |
 | 7. Polish | Remaining flows, states, mobile, demo project | |

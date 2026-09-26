@@ -20,7 +20,7 @@ export default async function IntegrationsPage() {
         title="Integrations"
         description="Connect a service once and every agent in this workspace can use it. Keys stay on the server and never reach the generated app's browser code."
       />
-      <IntegrationGrid integrations={INTEGRATIONS} connections={rows.map((r) => toConnectionView(r, account))} account={account} />
+      <IntegrationGrid integrations={INTEGRATIONS} connections={rows.map((r) => toConnectionView(r, account))} account={account} name={ws.name} />
     </PageContainer>
   );
 }
