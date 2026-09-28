@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "./schema";
+import { NO_DATABASE_MESSAGE, databaseUrl } from "./url";
 
 export type DB = PgDatabase<PgQueryResultHKT, typeof schema>;
 
@@ -14,7 +15,7 @@ const MIGRATIONS = path.join(process.cwd(), "drizzle");
  * runs with zero accounts. Both speak the same Postgres dialect and share one schema.
  */
 async function connect(): Promise<DB> {
-  const url = process.env.DATABASE_URL;
+  const url = databaseUrl();
 
   if (url) {
     const { neon } = await import("@neondatabase/serverless");
@@ -23,9 +24,7 @@ async function connect(): Promise<DB> {
   }
 
   if (process.env.NODE_ENV === "production" && !process.env.ALLOW_EMBEDDED_DB) {
-    throw new Error(
-      "DATABASE_URL is not set. Add a Neon database from your Vercel project's Storage tab, then redeploy.",
-    );
+    throw new Error(NO_DATABASE_MESSAGE);
   }
 
   const { PGlite } = await import("@electric-sql/pglite");

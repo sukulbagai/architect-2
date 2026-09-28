@@ -6,11 +6,12 @@ import "dotenv/config";
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
 import { migrate } from "drizzle-orm/neon-http/migrator";
+import { databaseUrl } from "../src/db/url";
 
 async function main() {
-  const url = process.env.DATABASE_URL;
+  const url = databaseUrl();
   if (!url) {
-    console.log("[migrate] DATABASE_URL not set; skipping (the embedded dev database migrates on first use).");
+    console.log("[migrate] No connection string set; skipping (the embedded dev database migrates on first use).");
     return;
   }
   const db = drizzle({ client: neon(url) });
