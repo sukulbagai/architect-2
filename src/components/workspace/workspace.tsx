@@ -52,6 +52,8 @@ import { useModeSwitch } from "@/components/shell/app-shell";
 import { GithubGlyph } from "@/components/auth/brand-icons";
 import { ConnectGithubDialog } from "@/components/github/connect-github-dialog";
 import { GithubSheet } from "@/components/github/github-sheet";
+import { DeploySheet } from "@/components/deploy/deploy-sheet";
+import { listDeployments } from "@/lib/actions/deploy";
 import { SyncChip } from "@/components/github/sync-chip";
 import { useCommandPalette, useRegisterCommands, type CommandItem } from "@/components/command/command-provider";
 import { Button } from "@/components/ui/button";
@@ -131,6 +133,7 @@ export function Workspace(props: {
   const [selectOn, setSelectOnState] = useState(false);
   const [selectTarget, setSelectTarget] = useState<EditTarget | null>(null);
   const [githubOpen, setGithubOpen] = useState(false);
+  const [deployOpen, setDeployOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -324,6 +327,7 @@ export function Workspace(props: {
             run: () => setChatMode((m) => (m === "build" ? "plan" : "build")),
           },
           { id: "test", label: "Run the testing agent", icon: FlaskConical, run: () => void runTests() },
+          { id: "deploy", label: "Deploy to a live URL", icon: Rocket, keywords: ["ship", "publish", "live", "release"], run: () => setDeployOpen(true) },
         ]
       : []),
     ...(!githubLogin && !repo
@@ -420,7 +424,29 @@ export function Workspace(props: {
             <TooltipContent>Search and commands</TooltipContent>
           </Tooltip>
           <SyncChip ws={ws} onClick={() => (ws.githubLogin || ws.repo ? setGithubOpen(true) : setConnectOpen(true))} />
-          <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => toast("Sharing arrives in a later milestone")}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="hidden sm:inline-flex"
+            onClick={async () => {
+              const live = (await listDeployments(ws.project.id)).find((d) => d.active);
+              if (!live) {
+                toast("Nothing is live yet", {
+                  description: "Deploy this version to get a public link you can share.",
+                  action: { label: "Deploy", onClick: () => setDeployOpen(true) },
+                });
+                return;
+              }
+              const url = new URL(`/live/${live.slug}`, window.location.origin).toString();
+              try {
+                await navigator.clipboard.writeText(url);
+                toast("Public link copied", { description: `${live.slug}.architect.app` });
+              } catch {
+                // Clipboard access can be refused (an insecure origin, or a denied permission).
+                toast("Your public link", { description: url, action: { label: "Open", onClick: () => window.open(url, "_blank") } });
+              }
+            }}
+          >
             <Share2 />
             Share
           </Button>
@@ -431,7 +457,7 @@ export function Workspace(props: {
                   size="sm"
                   disabled={!deployable}
                   className="bg-brand text-brand-foreground hover:bg-brand/90"
-                  onClick={() => toast("Deploying arrives in the Ship milestone", { description: "The deploy sheet with pre-flight checks, logs and a live URL comes next." })}
+                  onClick={() => setDeployOpen(true)}
                 >
                   <Rocket />
                   Deploy
@@ -474,7 +500,7 @@ export function Workspace(props: {
               <ChatMessages ws={ws} isPro={isPro} onSend={send} />
             </div>
             <div className="p-3 pt-0">
-              <ChatComposer ws={ws} isPro={isPro} mode={chatMode} setMode={setChatMode} onSend={send} onOpenDrawer={() => toggleDrawer("terminal")} />
+              <ChatComposer ws={ws} isPro={isPro} mode={chatMode} setMode={setChatMode} onSend={send} onOpenDrawer={() => toggleDrawer("terminal")} onOpenDeploy={() => setDeployOpen(true)} />
             </div>
           </div>
         </aside>
@@ -683,6 +709,7 @@ export function Workspace(props: {
         </section>
       </div>
       <GithubSheet ws={ws} isPro={isPro} open={githubOpen} onOpenChange={setGithubOpen} onConnect={() => setConnectOpen(true)} />
+      <DeploySheet ws={ws} open={deployOpen} onOpenChange={setDeployOpen} />
       <ConnectGithubDialog
         open={connectOpen}
         onOpenChange={setConnectOpen}

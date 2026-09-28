@@ -3,7 +3,31 @@
 A vibe-coding platform for agentic apps, designed for two audiences at once: builders who never want to see code,
 and developers who want files, diffs, Git and a terminal. Same project underneath, two depths on top.
 
-The product spec (research, flows, feature matrix, architecture and build plan) is in [`docs/spec.md`](docs/spec.md). Handoff notes for the remaining milestones are in [`docs/handoff/`](docs/handoff/README.md).
+The product spec (research, flows, feature matrix, architecture and build plan) is in [`docs/spec.md`](docs/spec.md). Build notes are in [`docs/handoff/`](docs/handoff/README.md).
+
+## A two-minute tour
+
+Nothing below needs an account, a key or a card. Sign-in is simulated, so "Continue with GitHub" just works.
+
+1. **Sign in.** Landing page → **Start building** → *Continue with GitHub* → pick the suggested account. On the
+   onboarding screen, choose **Engineering** and *Yes, I do* to land in **Pro**; pick **Skip for now** to see the
+   Simple depth instead. You can switch at any time from the toggle in the Workspace top bar.
+2. **Build an app from a sentence.** On Home, type *"A support desk copilot that triages tickets"* and press
+   **Start project**. Answer the clarifying questions (or turn **Plan first** off to skip straight to the build).
+   Watch the timeline: agents, pages and data appear, and the preview turns on part-way through.
+3. **Change it in plain English.** In the composer, ask for *"add a Reports page"*. In Pro, the change arrives as a
+   diff you accept or reject per file. Type *"break it"* to plant a real bug, then press **Fix it**.
+4. **Look underneath (Pro).** The **Code** tab has the real generated files; **Versions** shows every turn with a
+   one-click restore; ⌘J opens the terminal, logs and problems; ⌘K is the command palette.
+5. **Agents.** The **Agents** tab opens any agent's editor: framework (Lyzr, LangGraph, CrewAI, OpenAI, Claude,
+   ADK, Mastra, GitAgent), tools, knowledge and guardrails, with the matching source generated live and a test
+   console that shows the trace.
+6. **GitHub.** The top-bar chip connects a simulated account, links a repo, and does commits, pushes, branches and
+   pull requests over the real version history.
+7. **Deploy — the payoff.** Press **Deploy**. Pre-flight runs (the build, a real secret scan over the generated
+   files, agents, security), pick an address, and deploy. You get a **public URL at `/live/<slug>` that works
+   signed out, in any browser** — that part is genuinely real, not simulated. **Share** copies that link, and
+   older deployments can be rolled back from the same panel.
 
 ## Run it locally
 
@@ -84,14 +108,27 @@ scoped to it. A workspace is never looked up by email, since an unverified email
 
 Light/dark/system is independent of Simple/Pro. Design tokens live in `src/app/globals.css`.
 
-## Status
+## What's real, what's simulated, what's out of scope
 
-| Milestone | Scope | State |
-| --- | --- | --- |
-| 1. Foundation | Design system, app shell, database, sign-in, onboarding, Home, Projects | Done |
-| 2. Plan and build | Simulated planning, streamed builds, live preview, code tab, versions, the Consultant | Done |
-| 3. Iterate | Diff review, Fix it, visual edits, testing agent, terminal/logs/problems drawer, ⌘K, / commands and @ mentions | Done |
-| 4. Agents | Agent editor, code in 8 frameworks, flow graph, test console with traces, standalone agents (API + widget), integrations and MCP, knowledge | Done |
-| 5. GitHub | Simulated connect, import with analysis (repo, Git URL, ZIP), sync chip, push, pull, auto-commit, branches, pull requests | Done |
-| 6. Ship | Deploys, live URLs, rollback, env vars, usage | Next |
-| 7. Polish | Remaining flows, states, mobile, demo project | |
+**Real** (actually works, and persists): the database and every workspace, project, version and message in it;
+the generated code and its diffs; version restore; the public `/live/<slug>` URL and rollback; the standalone
+agent endpoint `POST /api/v1/agents/<id>/run` with a hashed API key, and the `/embed/agent/<id>` widget;
+AES-256-GCM encryption of imported environment values; light/dark and Simple/Pro.
+
+**Simulated** (deliberately — no API keys, nothing that can cost money): sign-in, AI planning and code generation,
+GitHub, integrations and MCP, agent replies, and the hosting side of a deploy (no provider is called; the app
+serves the frozen version itself).
+
+**Out of scope for this build**, and marked as such in the UI rather than hidden: custom domains and DNS,
+editing environment variables from Settings, billing and plans, the SQL query console and sample-row editing,
+preview comments, the marketplace and prompt library, and the local CLI.
+
+| Area | State |
+| --- | --- |
+| Design system, app shell, sign-in, onboarding, Home, Projects | Built |
+| Planning, streamed builds, live preview, Code tab, versions, the Consultant | Built |
+| Diff review, Fix it, visual edits, testing agent, terminal/logs/problems, ⌘K, / and @ | Built |
+| Agents: editor, 8 frameworks, flow graph, test console, standalone agents, integrations, MCP | Built |
+| GitHub: connect, import (repo, Git URL, ZIP), sync, push, pull, branches, pull requests | Built |
+| Deploy: pre-flight, public live URL, deployment history, rollback | Built |
+| Custom domains, env var editing, billing, query console, comments, marketplace, CLI | Out of scope |

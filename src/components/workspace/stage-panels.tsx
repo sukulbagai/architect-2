@@ -263,7 +263,7 @@ export function DataPanel({ ws, isPro }: { ws: Workspace; isPro: boolean }) {
           </table>
         </div>
       )}
-      <p className="mt-3 text-xs text-muted-foreground">Sample rows. The query console and live data editing arrive in a later milestone.</p>
+      <p className="mt-3 text-xs text-muted-foreground">Sample rows from the generated app. Editing them and the SQL console are out of scope for this build.</p>
     </div>
   );
 }
@@ -332,8 +332,8 @@ export function SettingsPanel({ ws, isPro, onOpenGithub, onConnectGithub }: { ws
         </dl>
         <p className="mt-4 text-xs text-muted-foreground">
           {ws.settings.import?.envVars.length
-            ? `${ws.settings.import.envVars.length} environment ${ws.settings.import.envVars.length === 1 ? "variable" : "variables"} came with the import (${ws.settings.import.envVars.join(", ")}). Editing them and the custom domain arrive with the Ship milestone.`
-            : "Environment variables and the custom domain arrive with the Ship milestone."}
+            ? `${ws.settings.import.envVars.length} environment ${ws.settings.import.envVars.length === 1 ? "variable" : "variables"} came with the import (${ws.settings.import.envVars.join(", ")}). Editing secrets and custom domains are out of scope for this build.`
+            : "Editing environment variables and custom domains are out of scope for this build."}
         </p>
       </section>
 

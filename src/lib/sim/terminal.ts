@@ -214,7 +214,7 @@ export function runCommand(input: string, ctx: TermContext): TermResult {
       if (args[0] === "deploy") {
         return {
           lines: [
-            line("Deploying from the terminal arrives with the Ship milestone.", "warning", 200),
+            line("Deploy from the top bar's Deploy button; the CLI is a concept for now.", "warning", 200),
             line("For now, use the Deploy button in the top bar. Every version is ready to ship.", "muted"),
           ],
         };

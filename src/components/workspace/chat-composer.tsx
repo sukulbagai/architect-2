@@ -57,6 +57,7 @@ export function ChatComposer({
   setMode,
   onSend,
   onOpenDrawer,
+  onOpenDeploy,
 }: {
   ws: Workspace;
   isPro: boolean;
@@ -64,6 +65,7 @@ export function ChatComposer({
   setMode: (m: "plan" | "build") => void;
   onSend: (text: string, mode: "plan" | "build") => void;
   onOpenDrawer: () => void;
+  onOpenDeploy: () => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -211,7 +213,7 @@ export function ChatComposer({
         void ws.runTests();
         break;
       case "deploy":
-        toast("Deploying arrives in the Ship milestone", { description: "The Deploy button in the top bar will open the deploy sheet." });
+        onOpenDeploy();
         break;
       case "review":
         if (!isPro) proOnly();
