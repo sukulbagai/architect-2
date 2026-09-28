@@ -44,10 +44,14 @@ export function LoginForm({ next }: { next?: string }) {
     startTransition(async () => {
       try {
         const res = await signIn({ method, name, email: mail });
+        if (!res.ok) {
+          toast.error("Sign-in didn't go through", { description: res.reason });
+          return;
+        }
         router.push(res.next === "/home" && next ? next : res.next);
         router.refresh();
       } catch {
-        toast.error("Sign-in didn't go through", { description: "Check the name and email, then try again." });
+        toast.error("Sign-in didn't go through", { description: "The server didn't respond. Try again in a moment." });
       }
     });
   }
